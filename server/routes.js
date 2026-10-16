@@ -345,7 +345,8 @@ function computeMyCard(mc, now, idx) {
     const u = benefitUsed(mc, i, now, idx);
     // 展开全部使用态：used / remaining / unlimited / expired / exhausted
     return { ...b, ...u };
-  });  const monthSpend = recs.amount.filter((r) => r.date >= monthStart).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  });
+  const monthSpend = recs.amount.filter((r) => r.date >= monthStart).reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const yearSpend = recs.amount.filter((r) => r.date >= yearStart).reduce((s, r) => s + (Number(r.amount) || 0), 0);
   // 还款信息（宽限期 + 两种还款方式）与预警分级
   const payment = D.paymentInfo(mc, now);
@@ -429,12 +430,6 @@ function benefitRecords(idx, myCardId, benefitIdx, bid) {
   return out;
 }
 
-function benefitUsage(myCardId, idx, bid) {
-  const all = getBenefits().filter((r) => r.myCardId === myCardId);
-  if (bid) return all.filter((r) => (r.bid ? r.bid === bid : r.idx === idx));
-  return all.filter((r) => r.idx === idx);
-}
-
 function benefitUsed(mc, idx, now, index, bid) {
   now = now || new Date();
   const b = (mc.benefits || [])[idx];
@@ -442,7 +437,8 @@ function benefitUsed(mc, idx, now, index, bid) {
   const start = U.cycleStart(b.resetCycle, mc.feeMonth, mc.feeDay, now);
   const startStr = U.toDateStr(start);
   const useBid = bid !== undefined ? bid : b.id;
-  const recs = (index ? benefitRecords(index, mc.id, idx, useBid) : benefitUsage(mc.id, idx, useBid)).filter((r) => r.date >= startStr);
+  const index2 = index || buildIndexes();
+  const recs = benefitRecords(index2, mc.id, idx, useBid).filter((r) => r.date >= startStr);
   const used = recs.filter((r) => r.type === 'usage').length
     + recs.filter((r) => r.type === 'count').reduce((s, r) => s + (Number(r.count) || 0), 0);
   const total = Number(b.total) || 0;
@@ -460,10 +456,12 @@ function benefitUsed(mc, idx, now, index, bid) {
   };
 }
 
-function benefitHistory(mc, idx, bid) {
+function benefitHistory(mc, idx, bid, index) {
   const b = (mc.benefits || [])[idx];
   if (!b) return [];
-  const recs = benefitUsage(mc.id, idx, bid !== undefined ? bid : b.id);
+  // 第四参可选：未传时兜底构建索引（保证旧式三参调用不报错），统一走 bid/idx 分桶索引查询
+  const idx2 = index || buildIndexes();
+  const recs = benefitRecords(idx2, mc.id, idx, bid !== undefined ? bid : b.id);
   const groups = new Map();
   for (const r of recs) {
     const key = U.cycleKeyOf(b.resetCycle, mc.feeMonth, mc.feeDay, r.date);
@@ -1248,7 +1246,7 @@ async function handle(method, pathname, url, body, req) {
     if (!mc) return err('持卡不存在', 404);
     const ref = resolveBenefit(mc, +benHisMatch[2], url.searchParams.get('bid'));
     if (!ref) return err('权益不存在', 404);
-    return json(benefitHistory(mc, ref.idx, ref.bid));
+    return json(benefitHistory(mc, ref.idx, ref.bid, buildIndexes()));
   }
   const benUseMatch = pathname.match(/^\/api\/mycards\/([^/]+)\/benefits\/(\d+)\/usage$/);
   if (benUseMatch && method === 'POST') {
