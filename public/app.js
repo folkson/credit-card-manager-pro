@@ -148,6 +148,15 @@ const state = {
   drawerId: null,
   filter: 'all',
   sort: 'name',
+  // 扩展资产（移植自 Benefit Tracker）
+  memberships: [],
+  vouchers: [],
+  voucherBrands: [],
+  knowledge: [],
+  assetStats: null,
+  // 卡/票页筛选
+  voucherTypeFilter: 'all',
+  knowledgeCatFilter: 'all',
 };
 
 const CYCLE_BADGE = { '自然月': 'badge-blue', '自然年': 'badge-purple', '年费日': 'badge-orange' };
@@ -180,6 +189,14 @@ async function loadAll() {
   state.billGroups = mycardsResp.billGroups || [];
   state.cards = cards;
   state.bills = bills || [];
+  // 扩展资产：加载失败不阻塞主页面（老备份/异常时优雅降级为空列表）
+  try {
+    [state.memberships, state.vouchers, state.voucherBrands, state.knowledge, state.assetStats] = await Promise.all([
+      api('/api/memberships'), api('/api/vouchers'), api('/api/voucherbrands'), api('/api/knowledge'), api('/api/assets/stats'),
+    ]);
+  } catch (e) {
+    state.memberships = []; state.vouchers = []; state.voucherBrands = []; state.knowledge = []; state.assetStats = null;
+  }
   applyTheme(settings.theme || 'light');
   render();
 }
@@ -218,6 +235,10 @@ async function toggleTheme() {
 function render() {
   const app = $('#app');
   if (state.page === 'mycards') app.innerHTML = renderMyCards();
+  else if (state.page === 'vouchers') app.innerHTML = renderVouchers();
+  else if (state.page === 'memberships') app.innerHTML = renderMemberships();
+  else if (state.page === 'knowledge') app.innerHTML = renderKnowledge();
+  else if (state.page === 'assetstats') app.innerHTML = renderAssetStats();
   else app.innerHTML = renderCardsDB();
   bindPageEvents();
   if (state.page === 'mycards') renderDrawer();
@@ -513,6 +534,9 @@ function bindPageEvents() {
     $('[data-act="edit-card-type"]', tr).addEventListener('click', () => openCardTypeModal(id));
     $('[data-act="del-card-type"]', tr).addEventListener('click', () => deleteCardType(id));
   });
+
+  // 扩展资产页面（卡/票 · 会员储值 · 知识库 · 统计）
+  bindAssetPageEvents();
 }
 
 async function toggleCollapse(key, bank) {
@@ -581,7 +605,7 @@ async function exportCards() {
 
 // ---------- 持卡备份：导出（全量 JSON，含权益/消费/账单） ----------
 async function exportBackup() {
-  if (!state.myCards.length) return toast('还没有持卡可备份', 'error');
+  if (!state.myCards.length && !state.memberships.length && !state.vouchers.length && !state.knowledge.length) return toast('还没有可备份的数据', 'error');
   try {
     const res = await fetch('/api/mycards/export');
     if (!res.ok) {
@@ -647,6 +671,13 @@ function openBackupImportModal() {
         (r.skippedCards > 0 ? '<div class="badge badge-yellow" style="margin-left:6px">卡种匹配失败 ' + r.skippedCards + ' 张</div>' : '') +
         (r.cardTypesAdded > 0 ? '<div class="badge badge-green" style="margin-left:6px">新建卡种 ' + r.cardTypesAdded + ' 个</div>' : '') +
         '<div class="badge" style="margin-left:6px">消费 ' + r.consumptions + ' 条 · 权益 ' + r.benefitRecords + ' 条 · 账单 ' + r.bills + ' 条</div>';
+      // v2 备份的四类扩展资产计数（旧备份无此字段则不展示）
+      const assetParts = [];
+      if (r.memberships != null) assetParts.push('会员卡 ' + r.memberships);
+      if (r.vouchers != null) assetParts.push('卡/票 ' + r.vouchers);
+      if (r.voucherBrands != null) assetParts.push('商家 ' + r.voucherBrands);
+      if (r.knowledge != null) assetParts.push('知识库 ' + r.knowledge);
+      if (assetParts.length) badges += '<div class="badge badge-blue" style="margin-left:6px">资产：' + assetParts.join(' · ') + '</div>';
       $('#backup-result').innerHTML = badges +
         (r.groupWarnings && r.groupWarnings.length
           ? '<div style="font-size:12px;color:#b8860b;margin-top:6px">' + r.groupWarnings.map(esc).join('<br>') + '</div>' : '');
@@ -790,6 +821,7 @@ function notifyModalHtml(cfg) {
     field('还款日提前天数（0=关闭）', '<input id="n-repayDays" type="number" min="0" value="' + esc(cfg.rules.repayBeforeDays) + '">') +
     field('月任务月末提醒天数（0=关闭）', '<input id="n-taskDays" type="number" min="0" value="' + esc(cfg.rules.taskRemainDays) + '">') +
     field('账单到期提前天数', '<input id="n-billDays" type="number" min="0" value="' + esc(cfg.rules.billBeforeDays) + '">') +
+    field('资产到期提前天数（0=关闭）', '<input id="n-assetDays" type="number" min="0" max="90" value="' + esc(cfg.rules.assetExpiryDays != null ? cfg.rules.assetExpiryDays : 7) + '">') +
     field('检查间隔（分钟，最小 5）', '<input id="n-interval" type="number" min="5" value="' + esc(cfg.intervalMinutes) + '">') +
     '<div class="field full"><label>账单已过到期日仍未还时提醒</label><select id="n-billOverdue"><option value="1"' + (cfg.rules.billOverdueRemind ? ' selected' : '') + '>开启</option><option value="0"' + (!cfg.rules.billOverdueRemind ? ' selected' : '') + '>关闭</option></select></div>' +
     '</div></div>' +
@@ -844,6 +876,7 @@ async function openNotifyModal() {
       repayBeforeDays: Number($n('n-repayDays').value) || 0,
       taskRemainDays: Number($n('n-taskDays').value) || 0,
       billBeforeDays: Number($n('n-billDays').value) || 0,
+      assetExpiryDays: Math.max(0, Math.min(90, Number($n('n-assetDays') && $n('n-assetDays').value) || 0)),
       billOverdueRemind: ($n('n-billOverdue') && $n('n-billOverdue').value === '1') ? 1 : 0,
     },
   });
@@ -1982,6 +2015,928 @@ function openImportModal() {
 
 function field(label, inputHtml) {
   return '<div class="field"><label>' + label + '</label>' + inputHtml + '</div>';
+}
+
+/* ============================================================
+ * 扩展资产页面（移植自 Benefit Tracker）
+ *   卡/票（vouchers）· 会员储值（memberships）· 知识库（knowledge）· 统计（assetstats）
+ * ============================================================ */
+
+// ---------- 通用小工具 ----------
+function daysBadge(expiry) {
+  if (!expiry) return '';
+  const d = new Date(expiry + 'T00:00:00');
+  if (isNaN(d.getTime())) return '';
+  const now = new Date();
+  const left = Math.round((d - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+  if (left < 0) return '<span class="badge badge-red">已过期</span>';
+  if (left <= 7) return '<span class="badge badge-red">' + left + ' 天后到期</span>';
+  if (left <= 30) return '<span class="badge badge-yellow">' + left + ' 天后到期</span>';
+  return '<span class="badge badge-default">' + left + ' 天后到期</span>';
+}
+
+function emptyBox(msg) { return '<div class="empty-tip">' + msg + '</div>'; }
+
+// ---------- 页面三：卡/票 ----------
+const VOU_TYPE_BADGE = { coupon: 'badge-blue', storedcard: 'badge-gold', fullred: 'badge-purple' };
+
+function renderVouchers() {
+  const list = state.vouchers || [];
+  const brands = state.voucherBrands || [];
+  const typeCount = { all: list.length, coupon: 0, storedcard: 0, fullred: 0 };
+  for (const v of list) if (typeCount[v.type] != null) typeCount[v.type]++;
+  let html =
+    '<div class="page-title">卡 / 票</div>' +
+    '<div class="page-desc">优惠券、储值卡、满减券统一管理，支持核销、回退与余额充值</div>' +
+    '<div class="toolbar">' +
+    '<button class="btn primary" id="btn-vou-add">＋ 添加卡/票</button>' +
+    '<button class="btn" id="btn-brand-add">商家管理</button>' +
+    '<div class="spacer"></div>' +
+    '<select id="vou-type-filter" class="filter-select">' +
+    option2('all', '全部（' + typeCount.all + '）', state.voucherTypeFilter) +
+    option2('coupon', '优惠券（' + typeCount.coupon + '）', state.voucherTypeFilter) +
+    option2('storedcard', '储值卡（' + typeCount.storedcard + '）', state.voucherTypeFilter) +
+    option2('fullred', '满减券（' + typeCount.fullred + '）', state.voucherTypeFilter) +
+    '</select></div>';
+
+  if (!list.length) return html + emptyBox('还没有卡/票，点「添加卡/票」开始记录');
+
+  // 按商家分组（brand 为空归入「未指定商家」）
+  const byBrand = {};
+  for (const v of list) {
+    if (state.voucherTypeFilter !== 'all' && v.type !== state.voucherTypeFilter) continue;
+    const key = v.brand || '未指定商家';
+    if (!byBrand[key]) byBrand[key] = [];
+    byBrand[key].push(v);
+  }
+  const keys = Object.keys(byBrand).sort((a, b) => a.localeCompare(b, 'zh'));
+  if (!keys.length) return html + emptyBox('当前筛选条件下没有卡/票');
+  for (const brand of keys) {
+    const items = byBrand[brand].slice().sort((a, b) => String(a.expiry || '9999').localeCompare(String(b.expiry || '9999')));
+    html +=
+      '<div class="bank-group"><div class="bank-header" style="cursor:default">' +
+      '<span class="bank-name">' + esc(brand) + '</span>' +
+      '<span class="bank-count">' + items.length + ' 张</span>' +
+      '<span class="bank-actions" style="font-size:12px;color:var(--text-3)">' +
+      esc(summarizeBrand(brand)) + '</span></div>' +
+      '<div class="bank-body">' +
+      items.map(voucherRowHtml).join('') +
+      '</div></div>';
+  }
+  return html;
+}
+
+function summarizeBrand(brand) {
+  const items = (state.vouchers || []).filter((v) => (v.brand || '未指定商家') === brand);
+  let countLeft = 0, moneyLeft = 0;
+  for (const v of items) {
+    if (v.mode === 'amount') moneyLeft += Number(v.balance) || 0;
+    else countLeft += Math.max(0, (Number(v.totalUses) || 0) - (Number(v.usedUses) || 0));
+  }
+  const parts = [];
+  if (countLeft) parts.push('剩 ' + fmtInt(countLeft) + ' 次');
+  if (moneyLeft) parts.push('余额 ' + fmtMoney(moneyLeft));
+  return parts.join(' · ');
+}
+
+function voucherRowHtml(v) {
+  const typeLabel = (v.typeLabel) || ({ coupon: '优惠券', storedcard: '储值卡', fullred: '满减券' }[v.type] || v.type);
+  const badge = '<span class="badge ' + (VOU_TYPE_BADGE[v.type] || 'badge-default') + '">' + esc(typeLabel) + '</span>';
+  let remainHtml = '';
+  if (v.mode === 'amount') {
+    remainHtml = '<div class="card-sub">余额 <b style="color:var(--gold-deep)">' + fmtMoney(v.balance) + '</b></div>';
+  } else {
+    const total = Number(v.totalUses) || 0, used = Number(v.usedUses) || 0;
+    const left = Math.max(0, total - used);
+    const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+    remainHtml =
+      '<div class="progress" style="margin-top:4px"><div class="progress-track"><div class="progress-fill' + (left === 0 ? ' done' : '') + '" style="width:' + pct + '%"></div></div>' +
+      '<div class="progress-text"><span>已用 ' + used + ' / ' + total + '</span><span class="remaining' + (left === 0 ? ' over' : '') + '">剩 ' + left + ' 次</span></div></div>';
+  }
+  const ruleHtml = v.type === 'fullred' ? '<div class="card-sub">满 ' + fmtMoney(v.threshold) + ' 减 ' + fmtMoney(v.discount) + '</div>' : '';
+  const scopeHtml = v.scope ? '<div class="card-sub">适用：' + esc(v.scope) + '</div>' : '';
+  return '<div class="card-row" data-vou-id="' + esc(v.id) + '">' +
+    '<div><div class="card-name">' + esc(v.name) + ' ' + badge + '</div>' +
+    '<div class="card-sub">' + esc(v.brand || '未指定商家') + (v.note ? ' · ' + esc(v.note) : '') + '</div>' +
+    ruleHtml + scopeHtml + '</div>' +
+    '<div>' + remainHtml + '</div>' +
+    '<div class="fee-cell">' + daysBadge(v.expiry) + '</div>' +
+    '<div><button class="btn small" data-act="vou-use">核销</button> <button class="btn small" data-act="vou-detail">详情</button></div>' +
+    '</div>';
+}
+
+function option2(value, label, cur) {
+  return '<option value="' + value + '"' + (cur === value ? ' selected' : '') + '>' + label + '</option>';
+}
+
+// 卡/票 表单（新建/编辑共用）
+function voucherFormHtml(v) {
+  v = v || {};
+  const brands = (state.voucherBrands || []).map((b) => b.name);
+  const brandOpts = ['<option value="">（自由填写）</option>']
+    .concat(brands.map((b) => '<option' + (v.brand === b ? ' selected' : '') + '>' + esc(b) + '</option>')).join('');
+  const type = v.type || 'coupon';
+  return '<div class="form-grid">' +
+    field('商家', '<select id="v-brand-sel">' + brandOpts + '</select>') +
+    field('或填写商家名', '<input id="v-brand" value="' + esc(v.brand || '') + '" placeholder="如 星巴克">') +
+    field('名称 <span style="color:var(--red)">*</span>', '<input id="v-name" value="' + esc(v.name || '') + '" placeholder="如 咖啡买一送一">') +
+    field('类型', '<select id="v-type">' +
+      '<option value="coupon"' + (type === 'coupon' ? ' selected' : '') + '>优惠券（按次）</option>' +
+      '<option value="storedcard"' + (type === 'storedcard' ? ' selected' : '') + '>储值卡（按金额）</option>' +
+      '<option value="fullred"' + (type === 'fullred' ? ' selected' : '') + '>满减券（次数+满减）</option>' +
+      '</select>') +
+    '<div class="full" id="v-count-fields">' +
+    field('总次数', '<input id="v-total" type="number" min="0" value="' + (v.totalUses != null ? v.totalUses : 1) + '">') +
+    field('已用次数（编辑时改这里可修正）', '<input id="v-used" type="number" min="0" value="' + (v.usedUses || 0) + '">') +
+    '</div>' +
+    '<div class="full" id="v-amount-fields" style="display:none">' +
+    field('余额（元）', '<input id="v-balance" type="number" min="0" step="0.01" value="' + (v.balance != null ? v.balance : 0) + '">') +
+    '</div>' +
+    '<div class="full" id="v-fullred-fields" style="display:none">' +
+    field('满减门槛（满 X 元可用）', '<input id="v-threshold" type="number" min="0" step="0.01" value="' + (v.threshold || 0) + '">') +
+    field('优惠金额（减 Y 元）', '<input id="v-discount" type="number" min="0" step="0.01" value="' + (v.discount || 0) + '">') +
+    '</div>' +
+    field('有效期至（选填）', '<input id="v-expiry" type="date" value="' + esc(v.expiry || '') + '">') +
+    field('适用范围（选填）', '<input id="v-scope" value="' + esc(v.scope || '') + '" placeholder="如 仅门店/限新品">') +
+    '<div class="full">' + field('备注（选填）', '<input id="v-note" value="' + esc(v.note || '') + '" placeholder="备注">') + '</div>' +
+    '</div>';
+}
+
+function openVoucherModal(id) {
+  const editing = id ? (state.vouchers || []).find((x) => x.id === id) : null;
+  if (id && !editing) return toast('卡/票不存在或已被删除', 'error');
+  openModal('<div class="modal-title">' + (editing ? '编辑卡/票' : '添加卡/票') + '</div>', voucherFormHtml(editing),
+    '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-vou-save">保存</button>');
+  const syncTypeFields = () => {
+    const t = $('#v-type').value;
+    $('#v-count-fields').style.display = t === 'storedcard' ? 'none' : '';
+    $('#v-amount-fields').style.display = t === 'storedcard' ? '' : 'none';
+    $('#v-fullred-fields').style.display = t === 'fullred' ? '' : 'none';
+  };
+  $('#v-type').addEventListener('change', syncTypeFields);
+  syncTypeFields();
+  $('#btn-vou-save').addEventListener('click', async () => {
+    const brandSel = $('#v-brand-sel').value;
+    const body = {
+      brand: ($('#v-brand').value.trim() || brandSel || '').trim(),
+      name: $('#v-name').value.trim(),
+      type: $('#v-type').value,
+      expiry: $('#v-expiry').value,
+      scope: $('#v-scope').value.trim(),
+      note: $('#v-note').value.trim(),
+    };
+    if (!body.name) return toast('请填写名称', 'error');
+    if (body.type === 'storedcard') body.balance = $('#v-balance').value;
+    else {
+      body.totalUses = $('#v-total').value;
+      if (editing) body.usedUses = $('#v-used').value;
+      if (body.type === 'fullred') { body.threshold = $('#v-threshold').value; body.discount = $('#v-discount').value; }
+    }
+    try {
+      if (editing) await api('/api/vouchers/' + editing.id, { method: 'PUT', body });
+      else await api('/api/vouchers', { method: 'POST', body });
+      toast(editing ? '已保存' : '已添加');
+      closeModal();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// 核销弹窗：按类型分流（次数核销 / 金额核销 / 满减校验）
+function openVoucherUseModal(id) {
+  const v = (state.vouchers || []).find((x) => x.id === id);
+  if (!v) return toast('卡/票不存在或已被删除', 'error');
+  if (v.mode === 'amount') {
+    openModal('<div class="modal-title">金额核销 — ' + esc(v.name) + '</div>',
+      '<div class="form-grid">' +
+      field('本单消费金额', '<input id="vu-amount" type="number" min="0.01" step="0.01" placeholder="0.00">') +
+      field('日期', '<input id="vu-date" type="date" value="' + today() + '">') +
+      field('备注（可选）', '<input id="vu-note" placeholder="备注">') +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text-3);margin-top:8px">当前余额 ' + fmtMoney(v.balance) + '</div>',
+      '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-vu-save">核销</button>');
+    $('#btn-vu-save').addEventListener('click', async () => {
+      const amount = parseFloat($('#vu-amount').value);
+      if (!amount || amount <= 0) return toast('请输入大于 0 的金额', 'error');
+      try {
+        const r = await api('/api/vouchers/' + v.id + '/topup', { method: 'POST', body: { kind: 'consume', amount, date: $('#vu-date').value, note: $('#vu-note').value.trim() } });
+        toast('已核销，余额 ' + fmtMoney(r.balance));
+        closeModal();
+        await loadAll();
+      } catch (e) { toast(e.message, 'error'); }
+    });
+    return;
+  }
+  const fullredRow = v.type === 'fullred'
+    ? field('本单金额（满 ' + fmtMoney(v.threshold) + ' 可用）', '<input id="vu-spend" type="number" min="0" step="0.01" placeholder="0.00">')
+    : '';
+  openModal('<div class="modal-title">核销 — ' + esc(v.name) + '</div>',
+    '<div class="form-grid">' + fullredRow +
+    field('日期', '<input id="vu-date" type="date" value="' + today() + '">') +
+    field('备注（可选）', '<input id="vu-note" placeholder="备注">') +
+    '</div>' +
+    '<div style="font-size:12px;color:var(--text-3);margin-top:8px">已用 ' + (v.usedUses || 0) + ' / ' + v.totalUses + ' 次</div>',
+    '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-vu-save">核销</button>');
+  $('#btn-vu-save').addEventListener('click', async () => {
+    const body = { date: $('#vu-date').value, note: $('#vu-note').value.trim() };
+    if (v.type === 'fullred') {
+      const spend = parseFloat($('#vu-spend').value);
+      if (!spend || spend <= 0) return toast('满减券需填写本单金额', 'error');
+      body.amount = spend;
+    }
+    try {
+      const r = await api('/api/vouchers/' + v.id + '/use', { method: 'POST', body });
+      toast('已核销，剩 ' + Math.max(0, (v.totalUses || 0) - r.usedUses) + ' 次');
+      closeModal();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// 储值卡充值弹窗
+function openVoucherTopupModal(id) {
+  const v = (state.vouchers || []).find((x) => x.id === id);
+  if (!v) return toast('卡/票不存在或已被删除', 'error');
+  openModal('<div class="modal-title">充值 — ' + esc(v.name) + '</div>',
+    '<div class="form-grid">' +
+    field('充值金额', '<input id="vt-amount" type="number" min="0.01" step="0.01" placeholder="0.00">') +
+    field('日期', '<input id="vt-date" type="date" value="' + today() + '">') +
+    field('备注（可选）', '<input id="vt-note" placeholder="如 购卡支出">') +
+    '</div>' +
+    '<div style="font-size:12px;color:var(--text-3);margin-top:8px">当前余额 ' + fmtMoney(v.balance) + '</div>',
+    '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-vt-save">充值</button>');
+  $('#btn-vt-save').addEventListener('click', async () => {
+    const amount = parseFloat($('#vt-amount').value);
+    if (!amount || amount <= 0) return toast('请输入大于 0 的金额', 'error');
+    try {
+      const r = await api('/api/vouchers/' + v.id + '/topup', { method: 'POST', body: { kind: 'topup', amount, date: $('#vt-date').value, note: $('#vt-note').value.trim() } });
+      toast('已充值，余额 ' + fmtMoney(r.balance));
+      closeModal();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// 卡/票详情抽屉（流水 + 编辑 + 删除）
+function openVoucherDetail(id) {
+  const v = (state.vouchers || []).find((x) => x.id === id);
+  if (!v) return;
+  const root = $('#drawer-root');
+  root.innerHTML = '<div class="overlay"></div><div class="drawer" id="drawer"></div>';
+  const txns = (v.transactions || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const rows = txns.map((t) => '<tr><td>' + esc(t.date) + '</td>' +
+    '<td><span class="badge ' + (t.kind === 'topup' ? 'badge-green' : 'badge-default') + '">' + (t.kind === 'topup' ? '充值' : '核销') + '</span></td>' +
+    '<td>' + (t.mode === 'amount' || Number(t.amount) ? fmtMoney(t.amount) : '1 次') + '</td>' +
+    '<td>' + esc(t.note || '') + '</td></tr>').join('');
+  const info = v.mode === 'amount'
+    ? infoItem('余额', fmtMoney(v.balance))
+    : infoItem('剩余次数', Math.max(0, (Number(v.totalUses) || 0) - (Number(v.usedUses) || 0)) + ' / ' + v.totalUses);
+  $('#drawer', root).innerHTML =
+    '<div class="drawer-header"><div class="drawer-title">' + esc(v.name) +
+    '<div class="drawer-sub">' + esc(v.brand || '未指定商家') + ' · ' + esc(v.typeLabel || v.type) + '</div></div>' +
+    '<button class="drawer-close" data-act="close">✕</button></div>' +
+    '<div class="drawer-body">' +
+    '<div class="drawer-section"><h3>基础信息</h3><div class="info-grid">' +
+    info + infoItem('有效期', v.expiry ? esc(v.expiry) + ' ' + daysBadge(v.expiry) : '长期有效') +
+    (v.type === 'fullred' ? infoItem('满减规则', '满 ' + fmtMoney(v.threshold) + ' 减 ' + fmtMoney(v.discount)) : '') +
+    (v.scope ? infoItem('适用范围', esc(v.scope)) : '') +
+    (v.note ? infoItem('备注', esc(v.note)) : '') +
+    '</div>' +
+    '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
+    '<button class="btn small primary" data-act="v-detail-use">核销</button>' +
+    (v.mode === 'amount' ? '<button class="btn small" data-act="v-detail-topup">充值</button>' : '') +
+    '<button class="btn small" data-act="v-detail-edit">编辑</button>' +
+    '<button class="btn small danger" data-act="v-detail-del">删除</button>' +
+    '</div></div>' +
+    '<div class="drawer-section"><h3>流水记录（' + txns.length + '）</h3>' +
+    (txns.length ? '<table class="record-table"><thead><tr><th>日期</th><th>类型</th><th>数量</th><th>备注</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<div style="font-size:13px;color:var(--text-3)">暂无流水</div>') +
+    '</div></div>';
+  requestAnimationFrame(() => { $('.overlay', root).classList.add('show'); $('#drawer', root).classList.add('show'); });
+  const close = () => { root.innerHTML = ''; };
+  $('.overlay', root).addEventListener('click', close);
+  $('[data-act="close"]', root).addEventListener('click', close);
+  $('[data-act="v-detail-use"]', root).addEventListener('click', () => { close(); openVoucherUseModal(v.id); });
+  const topupBtn = $('[data-act="v-detail-topup"]', root);
+  if (topupBtn) topupBtn.addEventListener('click', () => { close(); openVoucherTopupModal(v.id); });
+  $('[data-act="v-detail-edit"]', root).addEventListener('click', () => { close(); openVoucherModal(v.id); });
+  $('[data-act="v-detail-del"]', root).addEventListener('click', async () => {
+    if (!(await confirmDialog('确定删除「' + v.name + '」？流水将一并删除。'))) return;
+    try {
+      await api('/api/vouchers/' + v.id, { method: 'DELETE' });
+      toast('已删除');
+      close();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// 商家管理弹窗
+function openBrandsModal() {
+  const renderList = (brands) => {
+    return brands.length
+      ? brands.map((b) => '<div class="bg-group" data-bid="' + esc(b.id) + '"><div class="bg-head"><span class="bg-name">' + esc(b.name) + '</span>' +
+        '<span class="badge badge-default">' + (state.vouchers || []).filter((v) => v.brand === b.name).length + ' 张券</span>' +
+        '<div style="flex:1"></div>' +
+        '<button class="btn small" data-act="brand-edit">编辑</button> ' +
+        '<button class="btn small danger" data-act="brand-del">删除</button></div>' +
+        (b.note ? '<div style="font-size:12px;color:var(--text-3);margin-top:4px">' + esc(b.note) + '</div>' : '') +
+        '</div>').join('')
+      : '<div class="empty-tip" style="padding:16px">还没有商家，可先建商家再往里加券</div>';
+  };
+  openModal('<div class="modal-title">商家管理</div>',
+    '<div style="display:flex;gap:8px;margin-bottom:12px">' +
+    '<input id="brand-new-name" placeholder="商家名称" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);outline:none">' +
+    '<button class="btn primary" id="btn-brand-new">添加</button></div>' +
+    '<div id="brand-list">' + renderList(state.voucherBrands || []) + '</div>',
+    '<button class="btn primary" data-close>关闭</button>');
+  $('#btn-brand-new').addEventListener('click', async () => {
+    const name = $('#brand-new-name').value.trim();
+    if (!name) return toast('请填写商家名称', 'error');
+    try {
+      await api('/api/voucherbrands', { method: 'POST', body: { name } });
+      state.voucherBrands = await api('/api/voucherbrands');
+      $('#brand-list').innerHTML = renderList(state.voucherBrands);
+      bindBrandActions();
+      $('#brand-new-name').value = '';
+      toast('商家已添加');
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  const bindBrandActions = () => {
+    $$('#brand-list [data-act="brand-edit"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const bid = btn.closest('.bg-group').dataset.bid;
+        const b = state.voucherBrands.find((x) => x.id === bid);
+        const name = prompt('修改商家名称', b ? b.name : '');
+        if (name == null) return;
+        try {
+          await api('/api/voucherbrands/' + bid, { method: 'PUT', body: { name: name.trim() } });
+          state.voucherBrands = await api('/api/voucherbrands');
+          $('#brand-list').innerHTML = renderList(state.voucherBrands);
+          bindBrandActions();
+          toast('已保存');
+        } catch (e) { toast(e.message, 'error'); }
+      });
+    });
+    $$('#brand-list [data-act="brand-del"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const bid = btn.closest('.bg-group').dataset.bid;
+        if (!(await confirmDialog('确定删除该商家？券上保留的文字品牌不受影响。'))) return;
+        try {
+          await api('/api/voucherbrands/' + bid, { method: 'DELETE' });
+          state.voucherBrands = await api('/api/voucherbrands');
+          $('#brand-list').innerHTML = renderList(state.voucherBrands);
+          bindBrandActions();
+          toast('已删除');
+        } catch (e) { toast(e.message, 'error'); }
+      });
+    });
+  };
+  bindBrandActions();
+}
+
+// ---------- 页面四：会员储值 ----------
+const MEM_CAT_BADGE = {
+  video: 'badge-purple', ecard: 'badge-gold', dining: 'badge-orange', fitness: 'badge-green',
+  beauty: 'badge-red', travel: 'badge-blue', course: 'badge-blue', tool: 'badge-default', subscription: 'badge-default', other: 'badge-default',
+};
+
+function renderMemberships() {
+  const list = state.memberships || [];
+  const meta = state.meta.memCatLabels || {};
+  let html =
+    '<div class="page-title">会员 / 储值卡</div>' +
+    '<div class="page-desc">视频会员、健身年卡、储值卡等订阅资产管理，金额与次数两种模式</div>' +
+    '<div class="toolbar"><button class="btn primary" id="btn-mem-add">＋ 添加会员卡</button>' +
+    '<div class="spacer"></div>' +
+    '<select id="mem-cat-filter" class="filter-select">' +
+    option2('all', '全部分类', state.knowledgeCatFilter === '__mem__' ? 'all' : state.knowledgeCatFilter) +
+    Object.keys(meta).map((k) => option2(k, meta[k], state.knowledgeCatFilter === '__mem__' ? state.knowledgeCatFilter : 'all')).join('') +
+    '</select></div>';
+
+  if (!list.length) return html + emptyBox('还没有会员卡，点「添加会员卡」开始管理');
+
+  const cat = state.knowledgeCatFilter !== '__mem__' && state.knowledgeCatFilter !== 'all' ? state.knowledgeCatFilter : '';
+  const filtered = cat ? list.filter((m) => m.category === cat) : list;
+  if (!filtered.length) return html + emptyBox('当前分类下没有会员卡');
+
+  // 分类分组展示
+  const byCat = {};
+  for (const m of filtered) {
+    const key = meta[m.category] || '其他';
+    if (!byCat[key]) byCat[key] = [];
+    byCat[key].push(m);
+  }
+  const cats = Object.keys(byCat).sort((a, b) => a.localeCompare(b, 'zh'));
+  for (const catName of cats) {
+    const items = byCat[catName].slice().sort((a, b) => String(a.expiry || '9999').localeCompare(String(b.expiry || '9999')));
+    html += '<div class="bank-group"><div class="bank-header" style="cursor:default">' +
+      '<span class="bank-name">' + esc(catName) + '</span><span class="bank-count">' + items.length + ' 张</span></div>' +
+      '<div class="bank-body">' + items.map(memRowHtml).join('') + '</div></div>';
+  }
+  return html;
+}
+
+function memRowHtml(m) {
+  const catLabel = (state.meta.memCatLabels || {})[m.category] || '其他';
+  let remainHtml;
+  if (m.mode === 'amount') {
+    remainHtml = '<div class="card-sub">余额 <b style="color:var(--gold-deep)">' + fmtMoney(m.balance) + '</b></div>';
+  } else {
+    const total = Number(m.totalUses) || 0, used = Number(m.usedUses) || 0;
+    const left = Math.max(0, total - used);
+    const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+    remainHtml = '<div class="progress" style="margin-top:4px"><div class="progress-track"><div class="progress-fill' + (left === 0 ? ' done' : '') + '" style="width:' + pct + '%"></div></div>' +
+      '<div class="progress-text"><span>已用 ' + used + ' / ' + total + '</span><span class="remaining' + (left === 0 ? ' over' : '') + '">剩 ' + left + ' 次</span></div></div>';
+  }
+  return '<div class="card-row" data-mem-id="' + esc(m.id) + '">' +
+    '<div><div class="card-name">' + esc(m.name) + ' <span class="badge ' + (MEM_CAT_BADGE[m.category] || 'badge-default') + '">' + esc(catLabel) + '</span></div>' +
+    (m.note ? '<div class="card-sub">' + esc(m.note) + '</div>' : '') + '</div>' +
+    '<div>' + remainHtml + '</div>' +
+    '<div class="fee-cell">' + daysBadge(m.expiry) + '</div>' +
+    '<div><button class="btn small" data-act="mem-use">' + (m.mode === 'amount' ? '消费' : '使用') + '</button> ' +
+    '<button class="btn small" data-act="mem-detail">详情</button></div>' +
+    '</div>';
+}
+
+function memFormHtml(m) {
+  m = m || {};
+  const cats = state.meta.memCatLabels || {};
+  return '<div class="form-grid">' +
+    field('名称 <span style="color:var(--red)">*</span>', '<input id="m-name" value="' + esc(m.name || '') + '" placeholder="如 腾讯视频VIP">') +
+    field('分类', '<select id="m-category">' + Object.keys(cats).map((k) => '<option value="' + k + '"' + ((m.category || 'other') === k ? ' selected' : '') + '>' + esc(cats[k]) + '</option>').join('') + '</select>') +
+    field('模式', '<select id="m-mode">' +
+      '<option value="amount"' + (m.mode !== 'count' ? ' selected' : '') + '>金额型（储值）</option>' +
+      '<option value="count"' + (m.mode === 'count' ? ' selected' : '') + '>次数型（年卡）</option></select>') +
+    field('有效期至（选填）', '<input id="m-expiry" type="date" value="' + esc(m.expiry || '') + '">') +
+    '<div class="full" id="m-amount-fields"' + (m.mode === 'count' ? ' style="display:none"' : '') + '>' +
+    field('余额（元）', '<input id="m-balance" type="number" min="0" step="0.01" value="' + (m.balance != null ? m.balance : 0) + '">') +
+    '</div>' +
+    '<div class="full" id="m-count-fields"' + (m.mode === 'count' ? '' : ' style="display:none"') + '>' +
+    field('总次数', '<input id="m-total" type="number" min="0" value="' + (m.totalUses != null ? m.totalUses : 10) + '">') +
+    field('已用次数', '<input id="m-used" type="number" min="0" value="' + (m.usedUses || 0) + '">') +
+    '</div>' +
+    '<div class="full">' + field('备注（选填）', '<input id="m-note" value="' + esc(m.note || '') + '" placeholder="备注">') + '</div>' +
+    '</div>';
+}
+
+function openMemModal(id) {
+  const editing = id ? (state.memberships || []).find((x) => x.id === id) : null;
+  if (id && !editing) return toast('会员卡不存在或已被删除', 'error');
+  openModal('<div class="modal-title">' + (editing ? '编辑会员卡' : '添加会员卡') + '</div>', memFormHtml(editing),
+    '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-mem-save">保存</button>');
+  $('#m-mode').addEventListener('change', () => {
+    const isCount = $('#m-mode').value === 'count';
+    $('#m-amount-fields').style.display = isCount ? 'none' : '';
+    $('#m-count-fields').style.display = isCount ? '' : 'none';
+  });
+  $('#btn-mem-save').addEventListener('click', async () => {
+    const body = {
+      name: $('#m-name').value.trim(),
+      category: $('#m-category').value,
+      mode: $('#m-mode').value,
+      expiry: $('#m-expiry').value,
+      note: $('#m-note').value.trim(),
+    };
+    if (!body.name) return toast('请填写名称', 'error');
+    if (body.mode === 'count') { body.totalUses = $('#m-total').value; if (editing) body.usedUses = $('#m-used').value; }
+    else body.balance = $('#m-balance').value;
+    try {
+      if (editing) await api('/api/memberships/' + editing.id, { method: 'PUT', body });
+      else await api('/api/memberships', { method: 'POST', body });
+      toast(editing ? '已保存' : '已添加');
+      closeModal();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// 会员卡使用/消费/充值弹窗
+function openMemTxnModal(id, kind) {
+  const m = (state.memberships || []).find((x) => x.id === id);
+  if (!m) return toast('会员卡不存在或已被删除', 'error');
+  if (m.mode === 'amount') {
+    const isTopup = kind === 'topup';
+    openModal('<div class="modal-title">' + (isTopup ? '充值 — ' : '消费 — ') + esc(m.name) + '</div>',
+      '<div class="form-grid">' +
+      field((isTopup ? '充值金额' : '消费金额'), '<input id="mt-amount" type="number" min="0.01" step="0.01" placeholder="0.00">') +
+      field('日期', '<input id="mt-date" type="date" value="' + today() + '">') +
+      field('备注（可选）', '<input id="mt-note" placeholder="备注">') +
+      '</div>' +
+      '<div style="font-size:12px;color:var(--text-3);margin-top:8px">当前余额 ' + fmtMoney(m.balance) + '</div>',
+      '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-mt-save">' + (isTopup ? '充值' : '消费') + '</button>');
+    $('#btn-mt-save').addEventListener('click', async () => {
+      const amount = parseFloat($('#mt-amount').value);
+      if (!amount || amount <= 0) return toast('请输入大于 0 的金额', 'error');
+      try {
+        const r = await api('/api/memberships/' + m.id + '/txn', { method: 'POST', body: { kind: isTopup ? 'topup' : 'consume', amount, date: $('#mt-date').value, note: $('#mt-note').value.trim() } });
+        toast((isTopup ? '已充值，余额 ' : '已消费，余额 ') + fmtMoney(r.balance));
+        closeModal();
+        await loadAll();
+      } catch (e) { toast(e.message, 'error'); }
+    });
+    return;
+  }
+  // 次数型
+  openModal('<div class="modal-title">使用一次 — ' + esc(m.name) + '</div>',
+    '<div class="form-grid">' +
+    field('日期', '<input id="mt-date" type="date" value="' + today() + '">') +
+    field('备注（可选）', '<input id="mt-note" placeholder="备注">') +
+    '</div>' +
+    '<div style="font-size:12px;color:var(--text-3);margin-top:8px">已用 ' + (m.usedUses || 0) + ' / ' + m.totalUses + ' 次</div>',
+    '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-mt-save">使用</button>');
+  $('#btn-mt-save').addEventListener('click', async () => {
+    try {
+      const r = await api('/api/memberships/' + m.id + '/txn', { method: 'POST', body: { kind: 'use', date: $('#mt-date').value, note: $('#mt-note').value.trim() } });
+      toast('已使用，剩 ' + Math.max(0, (m.totalUses || 0) - r.usedUses) + ' 次');
+      closeModal();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// 会员卡详情抽屉
+function openMemDetail(id) {
+  const m = (state.memberships || []).find((x) => x.id === id);
+  if (!m) return;
+  const root = $('#drawer-root');
+  root.innerHTML = '<div class="overlay"></div><div class="drawer" id="drawer"></div>';
+  const txns = (m.transactions || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const rows = txns.map((t) => '<tr><td>' + esc(t.date) + '</td>' +
+    '<td><span class="badge ' + (t.kind === 'topup' ? 'badge-green' : 'badge-default') + '">' + (t.kind === 'topup' ? '充值' : '消费') + '</span></td>' +
+    '<td class="amount">' + fmtMoney(t.amount) + '</td>' +
+    '<td>' + esc(t.note || '') + '</td></tr>').join('');
+  const catLabel = (state.meta.memCatLabels || {})[m.category] || '其他';
+  $('#drawer', root).innerHTML =
+    '<div class="drawer-header"><div class="drawer-title">' + esc(m.name) +
+    '<div class="drawer-sub">' + esc(catLabel) + ' · ' + (m.mode === 'amount' ? '金额型' : '次数型') + '</div></div>' +
+    '<button class="drawer-close" data-act="close">✕</button></div>' +
+    '<div class="drawer-body">' +
+    '<div class="drawer-section"><h3>基础信息</h3><div class="info-grid">' +
+    (m.mode === 'amount' ? infoItem('余额', fmtMoney(m.balance)) : infoItem('剩余次数', Math.max(0, (Number(m.totalUses) || 0) - (Number(m.usedUses) || 0)) + ' / ' + m.totalUses)) +
+    infoItem('有效期', m.expiry ? esc(m.expiry) + ' ' + daysBadge(m.expiry) : '长期有效') +
+    (m.note ? infoItem('备注', esc(m.note)) : '') +
+    '</div>' +
+    '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
+    '<button class="btn small primary" data-act="md-use">' + (m.mode === 'amount' ? '消费' : '使用') + '</button>' +
+    (m.mode === 'amount' ? '<button class="btn small" data-act="md-topup">充值</button>' : '') +
+    (m.mode === 'count' ? '<button class="btn small" data-act="md-undo">回退一次</button>' : '') +
+    '<button class="btn small" data-act="md-edit">编辑</button>' +
+    '<button class="btn small danger" data-act="md-del">删除</button>' +
+    '</div></div>' +
+    '<div class="drawer-section"><h3>流水记录（' + txns.length + '）</h3>' +
+    (txns.length ? '<table class="record-table"><thead><tr><th>日期</th><th>类型</th><th style="text-align:right">金额</th><th>备注</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<div style="font-size:13px;color:var(--text-3)">暂无流水</div>') +
+    '</div></div>';
+  requestAnimationFrame(() => { $('.overlay', root).classList.add('show'); $('#drawer', root).classList.add('show'); });
+  const close = () => { root.innerHTML = ''; };
+  $('.overlay', root).addEventListener('click', close);
+  $('[data-act="close"]', root).addEventListener('click', close);
+  $('[data-act="md-use"]', root).addEventListener('click', () => { close(); openMemTxnModal(m.id, 'use'); });
+  const topupBtn = $('[data-act="md-topup"]', root);
+  if (topupBtn) topupBtn.addEventListener('click', () => { close(); openMemTxnModal(m.id, 'topup'); });
+  const undoBtn = $('[data-act="md-undo"]', root);
+  if (undoBtn) undoBtn.addEventListener('click', async () => {
+    try {
+      const r = await api('/api/memberships/' + m.id + '/txn', { method: 'POST', body: { kind: 'undo' } });
+      toast('已回退，剩 ' + ((m.totalUses || 0) - r.usedUses) + ' 次');
+      close();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('[data-act="md-edit"]', root).addEventListener('click', () => { close(); openMemModal(m.id); });
+  $('[data-act="md-del"]', root).addEventListener('click', async () => {
+    if (!(await confirmDialog('确定删除「' + m.name + '」？流水将一并删除。'))) return;
+    try {
+      await api('/api/memberships/' + m.id, { method: 'DELETE' });
+      toast('已删除');
+      close();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// ---------- 页面五：知识库 ----------
+const KG_TYPE_LABELS_FALLBACK = {
+  file: '网盘/文件资料', online_doc: '在线文档/表格', consultation: '在线咨询服务',
+  membership: '会员/社群/资讯平台', course: '学习课程', tool: '工具/软件订阅', other: '其他',
+};
+
+function renderKnowledge() {
+  const list = state.knowledge || [];
+  const meta = state.meta.kgCatLabels || {};
+  const totalSpend = list.reduce((s, k) => s + (Number(k.price) || 0), 0);
+  const active = list.filter((k) => k.lifetime || !k.expiry || k.expiry >= today()).length;
+  let html =
+    '<div class="page-title">知识库</div>' +
+    '<div class="page-desc">课程、专栏、社群、订阅等知识资产管理与使用追踪 · 年度投入 ' + fmtMoney(totalSpend) + ' · 在期 ' + active + ' / ' + list.length + '</div>' +
+    '<div class="toolbar"><button class="btn primary" id="btn-kg-add">＋ 添加资源</button>' +
+    '<div class="spacer"></div>' +
+    '<select id="kg-cat-filter" class="filter-select">' +
+    option2('all', '全部分类', state.knowledgeCatFilter) +
+    Object.keys(meta).map((k) => option2(k, meta[k], state.knowledgeCatFilter)).join('') +
+    '</select></div>';
+
+  if (!list.length) return html + emptyBox('还没有知识资源，点「添加资源」开始记录');
+
+  const cat = state.knowledgeCatFilter === 'all' ? '' : state.knowledgeCatFilter;
+  const filtered = cat ? list.filter((k) => k.category === cat) : list;
+  if (!filtered.length) return html + emptyBox('当前分类下没有资源');
+
+  // 按分类分组
+  const byCat = {};
+  for (const k of filtered) {
+    const key = meta[k.category] || '其他';
+    if (!byCat[key]) byCat[key] = [];
+    byCat[key].push(k);
+  }
+  const cats = Object.keys(byCat).sort((a, b) => a.localeCompare(b, 'zh'));
+  for (const catName of cats) {
+    const items = byCat[catName].slice().sort((a, b) => String(a.expiry || '9999').localeCompare(String(b.expiry || '9999')));
+    html += '<div class="bank-group"><div class="bank-header" style="cursor:default">' +
+      '<span class="bank-name">' + esc(catName) + '</span><span class="bank-count">' + items.length + ' 项 · 投入 ' + fmtMoney(items.reduce((s, k) => s + (Number(k.price) || 0), 0)) + '</span></div>' +
+      '<div class="bank-body">' + items.map(kgRowHtml).join('') + '</div></div>';
+  }
+  return html;
+}
+
+function kgRowHtml(k) {
+  const cycleLabel = (state.meta.kgCycleLabels || { monthly: '月付', yearly: '年付', lifetime: '终身' })[k.cycle] || k.cycle;
+  const typeLabel = (state.meta.kgTypeLabels || KG_TYPE_LABELS_FALLBACK)[k.resourceType] || k.resourceType;
+  const activeBadge = k.lifetime ? '<span class="badge badge-gold">终身</span>'
+    : (k.expiry && k.expiry < today() ? '<span class="badge badge-red">已到期</span>' : '<span class="badge badge-green">在期</span>');
+  const progress = Number(k.progress) || 0;
+  const uses = Number(k.uses) || 0;
+  return '<div class="card-row" data-kg-id="' + esc(k.id) + '">' +
+    '<div><div class="card-name">' + esc(k.title) + ' <span class="badge badge-blue">' + esc(typeLabel) + '</span></div>' +
+    '<div class="card-sub">' + esc(k.platform || '未填写平台') + ' · ' + esc(cycleLabel) + ' ' + fmtMoney(k.price) + (k.account ? ' · ' + esc(k.account) : '') + '</div>' +
+    '<div class="progress" style="margin-top:4px;max-width:260px"><div class="progress-track"><div class="progress-fill' + (progress >= 100 ? ' done' : '') + '" style="width:' + Math.min(100, progress) + '%"></div></div>' +
+    '<div class="progress-text"><span>进度 ' + progress + '% · 已用 ' + uses + ' 次</span></div></div></div>' +
+    '<div class="fee-cell">' + activeBadge + ' ' + daysBadge(k.lifetime ? '' : k.expiry) + '</div>' +
+    '<div><button class="btn small" data-act="kg-use">用一次</button> <button class="btn small" data-act="kg-detail">详情</button></div>' +
+    '</div>';
+}
+
+function kgFormHtml(k) {
+  k = k || {};
+  const types = state.meta.kgTypeLabels || KG_TYPE_LABELS_FALLBACK;
+  const cats = state.meta.kgCatLabels || {};
+  const cycles = state.meta.kgCycleLabels || { monthly: '月付', yearly: '年付', lifetime: '终身' };
+  return '<div class="form-grid">' +
+    field('资源名称 <span style="color:var(--red)">*</span>', '<input id="k-title" value="' + esc(k.title || '') + '" placeholder="如 极客时间年度会员">') +
+    field('平台', '<input id="k-platform" value="' + esc(k.platform || '') + '" placeholder="如 极客时间">') +
+    field('资源类型', '<select id="k-resourceType">' + Object.keys(types).map((t) => '<option value="' + t + '"' + ((k.resourceType || 'other') === t ? ' selected' : '') + '>' + esc(types[t]) + '</option>').join('') + '</select>') +
+    field('分类', '<select id="k-category">' + Object.keys(cats).map((t) => '<option value="' + t + '"' + ((k.category || 'other') === t ? ' selected' : '') + '>' + esc(cats[t]) + '</option>').join('') + '</select>') +
+    field('付费周期', '<select id="k-cycle">' + Object.keys(cycles).map((t) => '<option value="' + t + '"' + ((k.cycle || 'yearly') === t ? ' selected' : '') + '>' + esc(cycles[t]) + '</option>').join('') + '</select>') +
+    field('价格（元）', '<input id="k-price" type="number" min="0" step="0.01" value="' + (k.price != null ? k.price : 0) + '">') +
+    field('购买日期', '<input id="k-purchaseDate" type="date" value="' + esc(k.purchaseDate || today()) + '">') +
+    field('到期日（终身可留空）', '<input id="k-expiry" type="date" value="' + esc(k.expiry || '') + '">') +
+    field('学习进度（%）', '<input id="k-progress" type="number" min="0" max="100" value="' + (k.progress || 0) + '">') +
+    field('账号（选填）', '<input id="k-account" value="' + esc(k.account || '') + '" placeholder="账号/昵称">') +
+    '<div class="full">' + field('标签（多个用 、 分隔）', '<input id="k-tags" value="' + esc((k.tags || []).join('、')) + '" placeholder="如 技术、架构">') + '</div>' +
+    '<div class="full">' + field('备注', '<input id="k-note" value="' + esc(k.note || '') + '" placeholder="备注">') + '</div>' +
+    '</div>';
+}
+
+function openKgModal(id) {
+  const editing = id ? (state.knowledge || []).find((x) => x.id === id) : null;
+  if (id && !editing) return toast('资源不存在或已被删除', 'error');
+  openModal('<div class="modal-title">' + (editing ? '编辑资源' : '添加资源') + '</div>', kgFormHtml(editing),
+    '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-kg-save">保存</button>');
+  $('#btn-kg-save').addEventListener('click', async () => {
+    const body = {
+      title: $('#k-title').value.trim(),
+      platform: $('#k-platform').value.trim(),
+      resourceType: $('#k-resourceType').value,
+      category: $('#k-category').value,
+      cycle: $('#k-cycle').value,
+      price: $('#k-price').value,
+      purchaseDate: $('#k-purchaseDate').value,
+      expiry: $('#k-expiry').value,
+      progress: $('#k-progress').value,
+      account: $('#k-account').value.trim(),
+      tags: $('#k-tags').value.trim(),
+      note: $('#k-note').value.trim(),
+    };
+    if (!body.title) return toast('请填写资源名称', 'error');
+    try {
+      if (editing) await api('/api/knowledge/' + editing.id, { method: 'PUT', body });
+      else await api('/api/knowledge', { method: 'POST', body });
+      toast(editing ? '已保存' : '已添加');
+      closeModal();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// 知识库详情抽屉（使用记录 + 续费流水 + 操作）
+function openKgDetail(id) {
+  const k = (state.knowledge || []).find((x) => x.id === id);
+  if (!k) return;
+  const root = $('#drawer-root');
+  root.innerHTML = '<div class="overlay"></div><div class="drawer" id="drawer"></div>';
+  const useLog = (k.useLog || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const hist = (k.history || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const HIST_LABEL = { recharge: '充值', renew: '续费', use: '消费', refund: '退款', gift: '赠送' };
+  const cycleLabel = (state.meta.kgCycleLabels || { monthly: '月付', yearly: '年付', lifetime: '终身' })[k.cycle] || k.cycle;
+  const types = state.meta.kgTypeLabels || KG_TYPE_LABELS_FALLBACK;
+  const cats = state.meta.kgCatLabels || {};
+  const useRows = useLog.map((u) => '<tr><td>' + esc(u.date) + '</td><td>' + esc(u.note || '') + '</td></tr>').join('');
+  const histRows = hist.map((h) => '<tr><td>' + esc(h.date) + '</td>' +
+    '<td><span class="badge badge-default">' + esc(HIST_LABEL[h.type] || h.type) + '</span></td>' +
+    '<td class="amount">' + fmtMoney(h.amount) + '</td><td>' + esc(h.note || '') + '</td></tr>').join('');
+  $('#drawer', root).innerHTML =
+    '<div class="drawer-header"><div class="drawer-title">' + esc(k.title) +
+    '<div class="drawer-sub">' + esc(k.platform || '未填写平台') + ' · ' + esc(types[k.resourceType] || k.resourceType) + ' · ' + esc(cats[k.category] || k.category) + '</div></div>' +
+    '<button class="drawer-close" data-act="close">✕</button></div>' +
+    '<div class="drawer-body">' +
+    '<div class="drawer-section"><h3>基础信息</h3><div class="info-grid">' +
+    infoItem('价格', fmtMoney(k.price) + '（' + esc(cycleLabel) + '）') +
+    infoItem('累计使用', (Number(k.uses) || 0) + ' 次') +
+    infoItem('购买日期', esc(k.purchaseDate || '—')) +
+    infoItem('到期日', k.lifetime ? '终身有效' : (k.expiry ? esc(k.expiry) + ' ' + daysBadge(k.expiry) : '未设置')) +
+    (k.account ? infoItem('账号', esc(k.account)) : '') +
+    ((k.tags || []).length ? infoItem('标签', esc(k.tags.join('、'))) : '') +
+    (k.note ? infoItem('备注', esc(k.note)) : '') +
+    '</div>' +
+    '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">' +
+    '<button class="btn small primary" data-act="kd-use">用一次</button>' +
+    '<button class="btn small" data-act="kd-undo">回退一次</button>' +
+    '<button class="btn small" data-act="kd-renew">记一笔流水</button>' +
+    '<button class="btn small" data-act="kd-edit">编辑</button>' +
+    '<button class="btn small danger" data-act="kd-del">删除</button>' +
+    '</div></div>' +
+    '<div class="drawer-section"><h3>使用记录（' + useLog.length + '）</h3>' +
+    (useRows ? '<table class="record-table"><thead><tr><th>日期</th><th>说明</th></tr></thead><tbody>' + useRows + '</tbody></table>'
+      : '<div style="font-size:13px;color:var(--text-3)">暂无使用记录</div>') +
+    '</div>' +
+    '<div class="drawer-section"><h3>付费流水（' + hist.length + '）</h3>' +
+    (histRows ? '<table class="record-table"><thead><tr><th>日期</th><th>类型</th><th style="text-align:right">金额</th><th>备注</th></tr></thead><tbody>' + histRows + '</tbody></table>'
+      : '<div style="font-size:13px;color:var(--text-3)">暂无流水</div>') +
+    '</div></div>';
+  requestAnimationFrame(() => { $('.overlay', root).classList.add('show'); $('#drawer', root).classList.add('show'); });
+  const close = () => { root.innerHTML = ''; };
+  $('.overlay', root).addEventListener('click', close);
+  $('[data-act="close"]', root).addEventListener('click', close);
+  $('[data-act="kd-use"]', root).addEventListener('click', async () => {
+    try {
+      const r = await api('/api/knowledge/' + k.id + '/use', { method: 'POST', body: { date: today(), note: '' } });
+      toast('已记录使用（累计 ' + r.uses + ' 次）');
+      close();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('[data-act="kd-undo"]', root).addEventListener('click', async () => {
+    try {
+      const r = await api('/api/knowledge/' + k.id + '/use', { method: 'POST', body: { undo: true } });
+      toast('已回退（累计 ' + r.uses + ' 次）');
+      close();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+  $('[data-act="kd-renew"]', root).addEventListener('click', () => { close(); openKgHistoryModal(k.id); });
+  $('[data-act="kd-edit"]', root).addEventListener('click', () => { close(); openKgModal(k.id); });
+  $('[data-act="kd-del"]', root).addEventListener('click', async () => {
+    if (!(await confirmDialog('确定删除「' + k.title + '」？使用记录与流水将一并删除。'))) return;
+    try {
+      await api('/api/knowledge/' + k.id, { method: 'DELETE' });
+      toast('已删除');
+      close();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// 知识库流水弹窗（续费/充值/退款/赠送）
+function openKgHistoryModal(id) {
+  const k = (state.knowledge || []).find((x) => x.id === id);
+  if (!k) return toast('资源不存在或已被删除', 'error');
+  const LABELS = { renew: '续费', recharge: '充值', use: '消费', refund: '退款', gift: '赠送' };
+  openModal('<div class="modal-title">记一笔流水 — ' + esc(k.title) + '</div>',
+    '<div class="form-grid">' +
+    field('类型', '<select id="kh-type">' + Object.keys(LABELS).map((t) => '<option value="' + t + '">' + LABELS[t] + '</option>').join('') + '</select>') +
+    field('金额（元）', '<input id="kh-amount" type="number" min="0" step="0.01" value="0">') +
+    field('日期', '<input id="kh-date" type="date" value="' + today() + '">') +
+    field('备注（可选）', '<input id="kh-note" placeholder="如 续费一年">') +
+    '</div>',
+    '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-kh-save">保存</button>');
+  $('#btn-kh-save').addEventListener('click', async () => {
+    const amount = parseFloat($('#kh-amount').value);
+    if (!isFinite(amount) || amount < 0) return toast('金额不合法', 'error');
+    try {
+      await api('/api/knowledge/' + k.id + '/history', { method: 'POST', body: { type: $('#kh-type').value, amount, date: $('#kh-date').value, note: $('#kh-note').value.trim() } });
+      toast('流水已记录');
+      closeModal();
+      await loadAll();
+    } catch (e) { toast(e.message, 'error'); }
+  });
+}
+
+// ---------- 页面六：资产统计 ----------
+function renderAssetStats() {
+  const s = state.assetStats;
+  if (!s) return '<div class="page-title">统计</div>' + emptyBox('统计数据加载失败，请刷新重试');
+  const mem = s.membership || {}, vou = s.voucher || {}, kg = s.knowledge || {}, ben = s.benefit || {};
+  const rate = Number(ben.redemptionRate) || 0;
+  const rateColor = rate >= 80 ? 'var(--green)' : rate >= 50 ? 'var(--gold-deep)' : 'var(--red)';
+  let html =
+    '<div class="page-title">资产统计</div>' +
+    '<div class="page-desc">会员储值、卡/票、知识库与信用卡权益的综合视图</div>' +
+    '<div class="stats">' +
+    statCard('会员/储值余额', fmtMoney(mem.balance), '共 ' + fmtInt(mem.count || 0) + ' 张卡', false) +
+    statCard('卡/票剩余', fmtMoney(vou.balance), '另剩 ' + fmtInt(vou.remainingCount || 0) + ' 次核销额度', false) +
+    statCard('知识库投入', fmtMoney(kg.totalSpend), '共 ' + fmtInt(kg.count || 0) + ' 项 · 在期 ' + fmtInt(kg.activeCount || 0) + ' 项', false) +
+    statCard('权益核销率', rate + '%', '已用 ' + fmtInt(ben.used || 0) + ' / ' + fmtInt(ben.total || 0) + ' 次', rate < 30, 'stat-benefit-rate') +
+    '</div>';
+
+  // 资产结构（纯 CSS 条形，不引第三方图表库）
+  const structure = s.structure || [];
+  const maxVal = Math.max(1, ...structure.map((x) => Number(x.value) || 0));
+  html += '<div class="bank-group"><div class="bank-header" style="cursor:default"><span class="bank-name">资产结构</span></div><div class="bank-body" style="padding:14px 16px">';
+  for (const it of structure) {
+    const pct = Math.round(((Number(it.value) || 0) / maxVal) * 100);
+    html += '<div style="margin-bottom:12px">' +
+      '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span>' + esc(it.label) + '</span><b style="font-variant-numeric:tabular-nums">' + fmtMoney(it.value) + '</b></div>' +
+      '<div class="progress-track"><div class="progress-fill" style="width:' + pct + '%"></div></div></div>';
+  }
+  html += '</div></div>';
+
+  // 动态流（最近动态）
+  html += '<div class="bank-group"><div class="bank-header" style="cursor:default"><span class="bank-name">最近动态</span>' +
+    '<span class="bank-count">会员流水 · 券核销 · 知识使用 · 权益使用</span></div>' +
+    '<div class="bank-body" id="feed-body" style="padding:8px 16px">' + emptyBox('加载中…') + '</div></div>';
+  return html;
+}
+
+async function loadAssetFeed() {
+  const body = $('#feed-body');
+  if (!body) return;
+  try {
+    const feed = await api('/api/assets/feed?limit=30');
+    if (!feed.length) { body.innerHTML = emptyBox('暂无动态，先去记录一笔吧'); return; }
+    const KIND_META = {
+      membership: { label: '会员', cls: 'badge-purple' },
+      voucher: { label: '卡/票', cls: 'badge-blue' },
+      knowledge: { label: '知识', cls: 'badge-green' },
+      'knowledge-pay': { label: '知识', cls: 'badge-green' },
+      benefit: { label: '权益', cls: 'badge-gold' },
+    };
+    body.innerHTML = '<table class="record-table"><thead><tr><th>日期</th><th>来源</th><th>事项</th><th>对象</th><th style="text-align:right">金额</th></tr></thead><tbody>' +
+      feed.map((f) => {
+        const km = KIND_META[f.kind] || { label: f.kind, cls: 'badge-default' };
+        return '<tr><td>' + esc(f.date) + '</td>' +
+          '<td><span class="badge ' + km.cls + '">' + esc(km.label) + '</span></td>' +
+          '<td>' + esc(f.title || '') + '</td><td>' + esc(f.sub || '') + '</td>' +
+          '<td class="amount">' + (Number(f.amount) ? fmtMoney(f.amount) : '—') + '</td></tr>';
+      }).join('') + '</tbody></table>';
+  } catch (e) {
+    body.innerHTML = emptyBox('动态加载失败：' + esc(e.message));
+  }
+}
+
+// 扩展资产页面的事件绑定（在 bindPageEvents 末尾调用）
+function bindAssetPageEvents() {
+  const app = $('#app');
+  if (state.page === 'vouchers') {
+    $('#vou-type-filter', app).addEventListener('change', (e) => { state.voucherTypeFilter = e.target.value; render(); });
+    $('#btn-vou-add', app).addEventListener('click', () => openVoucherModal(null));
+    $('#btn-brand-add', app).addEventListener('click', openBrandsModal);
+    $$('.card-row[data-vou-id]', app).forEach((row) => {
+      $('[data-act="vou-use"]', row).addEventListener('click', () => openVoucherUseModal(row.dataset.vouId));
+      $('[data-act="vou-detail"]', row).addEventListener('click', () => openVoucherDetail(row.dataset.vouId));
+    });
+  } else if (state.page === 'memberships') {
+    $('#btn-mem-add', app).addEventListener('click', () => openMemModal(null));
+    const catSel = $('#mem-cat-filter', app);
+    if (catSel) catSel.addEventListener('change', (e) => {
+      state.knowledgeCatFilter = e.target.value === 'all' ? '__mem__' : e.target.value;
+      render();
+    });
+    $$('.card-row[data-mem-id]', app).forEach((row) => {
+      $('[data-act="mem-use"]', row).addEventListener('click', () => openMemTxnModal(row.dataset.memId, 'use'));
+      $('[data-act="mem-detail"]', row).addEventListener('click', () => openMemDetail(row.dataset.memId));
+    });
+  } else if (state.page === 'knowledge') {
+    $('#kg-cat-filter', app).addEventListener('change', (e) => { state.knowledgeCatFilter = e.target.value; render(); });
+    $('#btn-kg-add', app).addEventListener('click', () => openKgModal(null));
+    $$('.card-row[data-kg-id]', app).forEach((row) => {
+      $('[data-act="kg-use"]', row).addEventListener('click', () => openKgUseQuick(row.dataset.kgId));
+      $('[data-act="kg-detail"]', row).addEventListener('click', () => openKgDetail(row.dataset.kgId));
+    });
+  } else if (state.page === 'assetstats') {
+    loadAssetFeed();
+  }
+}
+
+// 知识库快速使用（行内按钮，成功后刷新）
+async function openKgUseQuick(id) {
+  const k = (state.knowledge || []).find((x) => x.id === id);
+  if (!k) return;
+  try {
+    const r = await api('/api/knowledge/' + id + '/use', { method: 'POST', body: { date: today(), note: '' } });
+    toast('已记录使用（累计 ' + r.uses + ' 次）');
+    await loadAll();
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 // ---------- 启动 ----------

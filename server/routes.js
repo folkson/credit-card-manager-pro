@@ -7,9 +7,33 @@ const notifier = require('./notifier');
 const reminder = require('./reminder');
 const ics = require('./ics');
 const D = require('./dates');
+const A = require('./assets');
 
 // 账单流水（月账单 + 是否已还）
 function getBills() { return store.readArray('bills'); }
+
+// ---------- 扩展资产（移植自 Benefit Tracker） ----------
+// 会员卡/储值卡、卡/票（券）、知识库资源、独立商家目录。
+// 访问器与上面 getBills 同风格：readArray 保证坏文件隔离与类型安全。
+function getMemberships() { return store.readArray('memberships'); }
+function getVouchers() { return store.readArray('vouchers'); }
+function getVoucherBrands() { return store.readArray('voucherBrands'); }
+function getKnowledge() { return store.readArray('knowledge'); }
+
+function getAssetMeta() {
+  return {
+    memCategories: A.MEM_CATEGORIES,
+    memCatLabels: A.MEM_CAT_LABELS,
+    voucherTypes: A.VOUCHER_TYPES,
+    voucherTypeMeta: A.VOUCHER_TYPE_META,
+    kgTypes: A.KG_TYPES,
+    kgTypeLabels: A.KG_TYPE_LABELS,
+    kgCats: A.KG_CATS,
+    kgCatLabels: A.KG_CAT_LABELS,
+    kgCycles: A.KG_CYCLES,
+    kgCycleLabels: A.KG_CYCLE_LABELS,
+  };
+}
 
 // ---------- 合并账单组 ----------
 // 组本身只存 id + 名称，成员关系记在 mycards[].billGroupId —— 单一事实来源，
@@ -525,6 +549,31 @@ function matchRoute(method, pathname) {
     ['PUT', /^\/api\/billgroups\/([^/]+)$/],
     ['DELETE', /^\/api\/billgroups\/([^/]+)$/],
     ['POST', /^\/api\/mycards\/([^/]+)\/bills\/generate$/],
+    ['GET', /^\/api\/assets\/meta$/],
+    ['GET', /^\/api\/assets\/stats$/],
+    ['GET', /^\/api\/assets\/feed$/],
+    ['GET', /^\/api\/assets\/expiring$/],
+    ['GET', /^\/api\/memberships$/],
+    ['POST', /^\/api\/memberships$/],
+    ['PUT', /^\/api\/memberships\/([^/]+)$/],
+    ['DELETE', /^\/api\/memberships\/([^/]+)$/],
+    ['POST', /^\/api\/memberships\/([^/]+)\/txn$/],
+    ['GET', /^\/api\/vouchers$/],
+    ['POST', /^\/api\/vouchers$/],
+    ['PUT', /^\/api\/vouchers\/([^/]+)$/],
+    ['DELETE', /^\/api\/vouchers\/([^/]+)$/],
+    ['POST', /^\/api\/vouchers\/([^/]+)\/use$/],
+    ['POST', /^\/api\/vouchers\/([^/]+)\/topup$/],
+    ['GET', /^\/api\/voucherbrands$/],
+    ['POST', /^\/api\/voucherbrands$/],
+    ['PUT', /^\/api\/voucherbrands\/([^/]+)$/],
+    ['DELETE', /^\/api\/voucherbrands\/([^/]+)$/],
+    ['GET', /^\/api\/knowledge$/],
+    ['POST', /^\/api\/knowledge$/],
+    ['PUT', /^\/api\/knowledge\/([^/]+)$/],
+    ['DELETE', /^\/api\/knowledge\/([^/]+)$/],
+    ['POST', /^\/api\/knowledge\/([^/]+)\/use$/],
+    ['POST', /^\/api\/knowledge\/([^/]+)\/history$/],
     ['POST', /^\/api\/shutdown$/],
   ];
   for (const [m, re] of routes) {
@@ -542,7 +591,7 @@ async function handle(method, pathname, url, body, req) {
 
   // ---- 基础 ----
   if (pathname === '/api/health') return json({ ok: true, version: '1.0.0', time: now.toISOString() });
-  if (pathname === '/api/meta') return json({ channels: CHANNELS, categories: CATEGORIES, waiverTypes: WAIVER_TYPES, resetCycles: RESET_CYCLES, benefitTypes: BENEFIT_TYPES, csvHeader: CSV_HEADER, mycardsCsvHeader: MYCARD_CSV_HEADER, maxImportCards: MAX_IMPORT_CARDS });
+  if (pathname === '/api/meta') return json({ channels: CHANNELS, categories: CATEGORIES, waiverTypes: WAIVER_TYPES, resetCycles: RESET_CYCLES, benefitTypes: BENEFIT_TYPES, csvHeader: CSV_HEADER, mycardsCsvHeader: MYCARD_CSV_HEADER, maxImportCards: MAX_IMPORT_CARDS, assets: getAssetMeta() });
   if (pathname === '/api/shutdown') {
     // 需要鉴权（由 index.js 的 auth.guard 保证）；此处再加一层同源校验，
     // 阻断「隐藏表单 POST 到 /api/shutdown」这类 CSRF（GET/跨站来源一律拒绝）
@@ -654,7 +703,7 @@ async function handle(method, pathname, url, body, req) {
     const usedCardIds = new Set(myCards.map((m) => m.cardId));
     const payload = {
       schema: 'guanka-backup',
-      version: 1,
+      version: 2, // v2：新增 memberships / vouchers / voucherBrands / knowledge 四类扩展资产
       exportedAt: now.toISOString(),
       cardTypes: cards.filter((c) => usedCardIds.has(c.id)),
       myCards,
@@ -662,6 +711,10 @@ async function handle(method, pathname, url, body, req) {
       benefitRecords: getBenefits().filter((r) => myIds.has(r.myCardId)),
       billGroups: getBillGroups(),
       bills: getBills().filter((b) => myIds.has(b.myCardId)),
+      memberships: getMemberships(),
+      vouchers: getVouchers(),
+      voucherBrands: getVoucherBrands(),
+      knowledge: getKnowledge(),
     };
     const filename = 'guanka-backup-' + U.todayStr() + '.json';
     // no-store：备份含个人金融数据，禁止被浏览器/代理/CDN 缓存。
@@ -684,7 +737,8 @@ async function handle(method, pathname, url, body, req) {
     if (!Array.isArray(data.myCards)) return err('备份文件缺少 myCards 数据');
     if (data.myCards.length > MAX_IMPORT_CARDS) return err('备份包含 ' + data.myCards.length + ' 张持卡，超出单次导入上限 ' + MAX_IMPORT_CARDS);
     // 明细记录（消费/权益/账单/卡种/组）总条数上限：防止单类缺省时在其余字段塞海量数据
-    for (const k of ['cardTypes', 'consumptions', 'benefitRecords', 'billGroups', 'bills']) {
+    // v2 备份新增四类扩展资产，一并纳入上限校验
+    for (const k of ['cardTypes', 'consumptions', 'benefitRecords', 'billGroups', 'bills', 'memberships', 'vouchers', 'voucherBrands', 'knowledge']) {
       if (Array.isArray(data[k]) && data[k].length > MAX_IMPORT_RECORDS) {
         return err('备份 ' + k + ' 含 ' + data[k].length + ' 条记录，超出单次导入上限 ' + MAX_IMPORT_RECORDS);
       }
@@ -782,7 +836,13 @@ async function handle(method, pathname, url, body, req) {
       };
       safeMyCards.push(mc);
     }
-    if (!safeMyCards.length && !dedupedCards) return err('备份中没有可导入的持卡（卡种匹配全部失败）');
+    // v2 备份允许纯资产（无持卡）：四类扩展资产有一类可导入即可放行。
+    // v1 备份（无资产字段）或资产也为空时，仍维持「无持卡即拒绝」的口径。
+    const hasAssetPayload = ['memberships', 'vouchers', 'voucherBrands', 'knowledge']
+      .some((k) => Array.isArray(data[k]) && data[k].length > 0);
+    if (!safeMyCards.length && !dedupedCards && !hasAssetPayload) {
+      return err('备份中没有可导入的持卡（卡种匹配全部失败）');
+    }
 
     // —— 合并账单组（备份里的组先重建，成员引用在下面按备份 billGroupId 关联）——
     const groups = mode === 'merge' ? getBillGroups() : [];
@@ -920,6 +980,56 @@ async function handle(method, pathname, url, body, req) {
       });
     }
 
+    // —— 扩展资产（v2 备份新增，旧 v1 备份没有这些字段则按空数组处理）——
+    // merge 幂等：同 id 已存在即跳过；商家按名称去重（同名沿用库里的，保证券的 brand 引用不悬空）
+    const existingMemIds = new Set(mode === 'merge' ? getMemberships().map((x) => x.id) : []);
+    const existingVouIds = new Set(mode === 'merge' ? getVouchers().map((x) => x.id) : []);
+    const existingKgIds = new Set(mode === 'merge' ? getKnowledge().map((x) => x.id) : []);
+    const existingBrands = mode === 'merge' ? getVoucherBrands() : [];
+    const brandByName = new Map(existingBrands.map((x) => [x.name, x]));
+
+    const safeMemberships = [];
+    for (const m of Array.isArray(data.memberships) ? data.memberships : []) {
+      if (!m || typeof m !== 'object') continue;
+      if (mode === 'merge' && typeof m.id === 'string' && m.id && existingMemIds.has(m.id)) continue;
+      const rec = A.normalizeMembership(m, null);
+      if (!rec.name) continue;
+      existingMemIds.add(rec.id);
+      safeMemberships.push(rec);
+    }
+
+    const safeVouchers = [];
+    for (const v of Array.isArray(data.vouchers) ? data.vouchers : []) {
+      if (!v || typeof v !== 'object') continue;
+      if (mode === 'merge' && typeof v.id === 'string' && v.id && existingVouIds.has(v.id)) continue;
+      const rec = A.normalizeVoucher(v, null);
+      if (!rec.name) continue;
+      existingVouIds.add(rec.id);
+      safeVouchers.push(rec);
+    }
+
+    const safeBrands = [];
+    for (const b of Array.isArray(data.voucherBrands) ? data.voucherBrands : []) {
+      if (!b || typeof b !== 'object') continue;
+      const name = String(b.name || '').trim();
+      if (!name) continue;
+      // 同名商家已存在（库中或本次已建）→ 沿用，不重复落库
+      if (brandByName.has(name)) continue;
+      const rec = A.normalizeBrand(b, null);
+      brandByName.set(rec.name, rec);
+      safeBrands.push(rec);
+    }
+
+    const safeKnowledge = [];
+    for (const k of Array.isArray(data.knowledge) ? data.knowledge : []) {
+      if (!k || typeof k !== 'object') continue;
+      if (mode === 'merge' && typeof k.id === 'string' && k.id && existingKgIds.has(k.id)) continue;
+      const rec = A.normalizeKnowledge(k, null);
+      if (!rec.title) continue;
+      existingKgIds.add(rec.id);
+      safeKnowledge.push(rec);
+    }
+
     // —— 落库 ——
     if (mode === 'replace') {
       store.write('mycards', safeMyCards);
@@ -927,6 +1037,10 @@ async function handle(method, pathname, url, body, req) {
       store.write('benefits', safeBens);
       store.write('bills', safeBills);
       store.write('billGroups', finalGroups);
+      store.write('memberships', safeMemberships);
+      store.write('vouchers', safeVouchers);
+      store.write('voucherBrands', safeBrands);
+      store.write('knowledge', safeKnowledge);
     } else {
       const myCards = getMyCards();
       // merge 模式再防一手 id 撞车（前面 existingMyIds 已排除，这里双保险重建数组）
@@ -940,6 +1054,11 @@ async function handle(method, pathname, url, body, req) {
       const bills = getBills().concat(safeBills);
       store.write('bills', bills);
       store.write('billGroups', finalGroups);
+      // 扩展资产 merge 追加（id/名称已在归一化段预检排除）
+      store.write('memberships', getMemberships().concat(safeMemberships));
+      store.write('vouchers', getVouchers().concat(safeVouchers));
+      store.write('voucherBrands', getVoucherBrands().concat(safeBrands));
+      store.write('knowledge', getKnowledge().concat(safeKnowledge));
     }
     store.write('cards', cards);
     cleanBillGroups();
@@ -958,6 +1077,10 @@ async function handle(method, pathname, url, body, req) {
       benefitRecords: safeBens.length,
       bills: safeBills.length,
       billGroups: finalGroups.length,
+      memberships: safeMemberships.length,
+      vouchers: safeVouchers.length,
+      voucherBrands: safeBrands.length,
+      knowledge: safeKnowledge.length,
       groupWarnings: groupErrs,
     }, 200);
   }
@@ -1492,6 +1615,364 @@ async function handle(method, pathname, url, body, req) {
     return json(rec, 201);
   }
 
+  // ---- 扩展资产：会员卡/储值卡（移植自 Benefit Tracker）----
+  if (pathname === '/api/memberships' && method === 'GET') {
+    const list = getMemberships().map((m) => ({ ...m, remaining: A.membershipRemaining(m) }));
+    return json(list);
+  }
+  if (pathname === '/api/memberships' && method === 'POST') {
+    const b = body || {};
+    if (!String(b.name || '').trim()) return err('请填写名称');
+    if (b.mode === 'count' && nonNeg(b.totalUses, -1) < 0) return err('总次数必须不小于 0');
+    const rec = A.normalizeMembership(b, null);
+    const list = getMemberships();
+    list.push(rec);
+    store.write('memberships', list);
+    return json(rec, 201);
+  }
+  const memMatch = pathname.match(/^\/api\/memberships\/([^/]+)$/);
+  if (memMatch && method === 'PUT') {
+    const list = getMemberships();
+    const cur = list.find((x) => x.id === memMatch[1]);
+    if (!cur) return err('会员卡不存在', 404);
+    const rec = A.normalizeMembership(body || {}, cur);
+    // 流水不在编辑表单里整体替换（由 /txn 端点维护），编辑时保留原流水
+    rec.transactions = cur.transactions;
+    list.splice(list.indexOf(cur), 1, rec);
+    store.write('memberships', list);
+    return json(rec);
+  }
+  if (memMatch && method === 'DELETE') {
+    const list = getMemberships();
+    if (!list.some((x) => x.id === memMatch[1])) return err('会员卡不存在', 404);
+    store.write('memberships', list.filter((x) => x.id !== memMatch[1]));
+    return json({ ok: true });
+  }
+  // 流水：充值/消费一笔，金额驱动余额（按次型忽略金额改走次数）
+  const memTxnMatch = pathname.match(/^\/api\/memberships\/([^/]+)\/txn$/);
+  if (memTxnMatch && method === 'POST') {
+    const list = getMemberships();
+    const m = list.find((x) => x.id === memTxnMatch[1]);
+    if (!m) return err('会员卡不存在', 404);
+    const b = body || {};
+    if (m.mode === 'amount') {
+      const amount = Number(b.amount);
+      if (!isFinite(amount) || amount <= 0) return err('金额必须大于 0');
+      if (amount > MAX_MONEY) return err('金额超出允许范围');
+      if (b.kind !== 'topup' && amount > m.balance) return err('余额不足');
+      const txn = A.normalizeTxn({ kind: b.kind === 'topup' ? 'topup' : 'consume', amount, note: b.note, date: b.date });
+      if (txn.kind === 'topup') m.balance = A.round2(m.balance + amount);
+      else m.balance = A.round2(m.balance - amount);
+      m.transactions.push(txn);
+      store.write('memberships', list);
+      return json({ ok: true, balance: m.balance, txn }, 201);
+    }
+    // 按次型：kind=use 使用一次 / undo 回退一次
+    if (b.kind === 'use') {
+      if (m.usedUses >= m.totalUses) return err('次数已用完');
+      const txn = A.normalizeTxn({ kind: 'consume', amount: 0, note: b.note || '使用 1 次', date: b.date });
+      m.usedUses += 1;
+      m.transactions.push(txn);
+      store.write('memberships', list);
+      return json({ ok: true, usedUses: m.usedUses, txn }, 201);
+    }
+    if (b.kind === 'undo') {
+      if (m.usedUses <= 0) return err('没有可回退的使用');
+      m.usedUses -= 1;
+      store.write('memberships', list);
+      return json({ ok: true, usedUses: m.usedUses }, 201);
+    }
+    return err('按次型会员卡只支持 use/undo');
+  }
+
+  // ---- 扩展资产：卡/票（券）----
+  if (pathname === '/api/vouchers' && method === 'GET') {
+    const list = getVouchers().map((v) => ({ ...v, remaining: A.voucherRemaining(v), typeLabel: A.VOUCHER_TYPE_META[v.type].l }));
+    return json(list);
+  }
+  if (pathname === '/api/vouchers' && method === 'POST') {
+    const b = body || {};
+    if (!String(b.brand || '').trim()) return err('请填写品牌');
+    if (!String(b.name || '').trim()) return err('请填写名称');
+    const rec = A.normalizeVoucher(b, null);
+    const list = getVouchers();
+    list.push(rec);
+    store.write('vouchers', list);
+    return json(rec, 201);
+  }
+  const vchMatch = pathname.match(/^\/api\/vouchers\/([^/]+)$/);
+  if (vchMatch && method === 'PUT') {
+    const list = getVouchers();
+    const cur = list.find((x) => x.id === vchMatch[1]);
+    if (!cur) return err('券不存在', 404);
+    const rec = A.normalizeVoucher(body || {}, cur);
+    rec.transactions = cur.transactions; // 流水由 /use /topup 维护
+    list.splice(list.indexOf(cur), 1, rec);
+    store.write('vouchers', list);
+    return json(rec);
+  }
+  if (vchMatch && method === 'DELETE') {
+    const list = getVouchers();
+    if (!list.some((x) => x.id === vchMatch[1])) return err('券不存在', 404);
+    store.write('vouchers', list.filter((x) => x.id !== vchMatch[1]));
+    return json({ ok: true });
+  }
+  // 核销/撤销：次数口径改 usedUses；满减券核销时校验满减门槛（前端先传 amount=消费金额）
+  const vchUseMatch = pathname.match(/^\/api\/vouchers\/([^/]+)\/use$/);
+  if (vchUseMatch && method === 'POST') {
+    const list = getVouchers();
+    const v = list.find((x) => x.id === vchUseMatch[1]);
+    if (!v) return err('券不存在', 404);
+    const b = body || {};
+    if (b.undo) {
+      if (v.usedUses <= 0) return err('没有可撤销的核销');
+      v.usedUses -= 1;
+      v.transactions.push(A.normalizeTxn({ kind: 'consume', amount: 0, note: b.note || '撤销核销', date: b.date }));
+      store.write('vouchers', list);
+      return json({ ok: true, usedUses: v.usedUses }, 201);
+    }
+    if (v.mode === 'amount') return err('储值型请走充值/核销金额端点');
+    if (v.usedUses >= v.totalUses) return err('次数已用完');
+    if (v.type === 'fullred') {
+      const spend = Number(b.amount);
+      if (!isFinite(spend) || spend <= 0) return err('满减券核销需传入本单金额 amount');
+      if (spend < v.threshold) return err('未达满减门槛（满 ' + v.threshold + ' 可用）');
+    }
+    const txn = A.normalizeTxn({ kind: 'consume', amount: 0, note: b.note || '使用 1 次', date: b.date });
+    v.usedUses += 1;
+    v.transactions.push(txn);
+    store.write('vouchers', list);
+    return json({ ok: true, usedUses: v.usedUses }, 201);
+  }
+  // 储值型充值/核销金额
+  const vchTopMatch = pathname.match(/^\/api\/vouchers\/([^/]+)\/topup$/);
+  if (vchTopMatch && method === 'POST') {
+    const list = getVouchers();
+    const v = list.find((x) => x.id === vchTopMatch[1]);
+    if (!v) return err('券不存在', 404);
+    if (v.mode !== 'amount') return err('仅储值型支持充值/金额核销');
+    const b = body || {};
+    const amount = Number(b.amount);
+    if (!isFinite(amount) || amount <= 0) return err('金额必须大于 0');
+    if (amount > MAX_MONEY) return err('金额超出允许范围');
+    if (b.kind !== 'topup' && amount > v.balance) return err('余额不足');
+    const txn = A.normalizeTxn({ kind: b.kind === 'topup' ? 'topup' : 'consume', amount, note: b.note, date: b.date });
+    if (txn.kind === 'topup') v.balance = A.round2(v.balance + amount);
+    else v.balance = A.round2(v.balance - amount);
+    v.transactions.push(txn);
+    store.write('vouchers', list);
+    return json({ ok: true, balance: v.balance, txn }, 201);
+  }
+
+  // ---- 扩展资产：独立商家 ----
+  if (pathname === '/api/voucherbrands' && method === 'GET') return json(getVoucherBrands());
+  if (pathname === '/api/voucherbrands' && method === 'POST') {
+    const b = body || {};
+    const name = String(b.name || '').trim();
+    if (!name) return err('请填写商家名称');
+    const list = getVoucherBrands();
+    if (list.some((x) => x.name === name)) return err('已存在同名商家');
+    const rec = A.normalizeBrand({ name, note: b.note }, null);
+    list.push(rec);
+    store.write('voucherBrands', list);
+    return json(rec, 201);
+  }
+  const vbMatch = pathname.match(/^\/api\/voucherbrands\/([^/]+)$/);
+  if (vbMatch && method === 'PUT') {
+    const list = getVoucherBrands();
+    const cur = list.find((x) => x.id === vbMatch[1]);
+    if (!cur) return err('商家不存在', 404);
+    const b = body || {};
+    const name = b.name != null ? String(b.name).trim() : cur.name;
+    if (!name) return err('商家名称不能为空');
+    if (list.some((x) => x.name === name && x.id !== cur.id)) return err('已存在同名商家');
+    const rec = A.normalizeBrand({ name, note: b.note }, cur);
+    list.splice(list.indexOf(cur), 1, rec);
+    store.write('voucherBrands', list);
+    return json(rec);
+  }
+  if (vbMatch && method === 'DELETE') {
+    const list = getVoucherBrands();
+    if (!list.some((x) => x.id === vbMatch[1])) return err('商家不存在', 404);
+    store.write('voucherBrands', list.filter((x) => x.id !== vbMatch[1]));
+    return json({ ok: true });
+  }
+
+  // ---- 扩展资产：知识库 ----
+  if (pathname === '/api/knowledge' && method === 'GET') {
+    const list = getKnowledge().map((k) => ({ ...k, active: !k.lifetime && (!k.expiry || k.expiry >= U.todayStr()) }));
+    return json(list);
+  }
+  if (pathname === '/api/knowledge' && method === 'POST') {
+    const b = body || {};
+    if (!String(b.title || '').trim()) return err('请填写资源名称');
+    const rec = A.normalizeKnowledge(b, null);
+    const list = getKnowledge();
+    list.push(rec);
+    store.write('knowledge', list);
+    return json(rec, 201);
+  }
+  const kgMatch = pathname.match(/^\/api\/knowledge\/([^/]+)$/);
+  if (kgMatch && method === 'PUT') {
+    const list = getKnowledge();
+    const cur = list.find((x) => x.id === kgMatch[1]);
+    if (!cur) return err('资源不存在', 404);
+    const rec = A.normalizeKnowledge(body || {}, cur);
+    rec.useLog = cur.useLog;   // 使用记录由 /use 维护
+    rec.history = cur.history; // 流水由 /history 维护
+    list.splice(list.indexOf(cur), 1, rec);
+    store.write('knowledge', list);
+    return json(rec);
+  }
+  if (kgMatch && method === 'DELETE') {
+    const list = getKnowledge();
+    if (!list.some((x) => x.id === kgMatch[1])) return err('资源不存在', 404);
+    store.write('knowledge', list.filter((x) => x.id !== kgMatch[1]));
+    return json({ ok: true });
+  }
+  // 使用记录：+1 / -1（-1 只撤次数不删流水，与管卡消费撤销语义对齐）
+  const kgUseMatch = pathname.match(/^\/api\/knowledge\/([^/]+)\/use$/);
+  if (kgUseMatch && method === 'POST') {
+    const list = getKnowledge();
+    const k = list.find((x) => x.id === kgUseMatch[1]);
+    if (!k) return err('资源不存在', 404);
+    const b = body || {};
+    const q = k.quota || { count: 0, countMax: 0, balance: 0, download: 0, call: 0 };
+    if (b.undo) {
+      if (k.uses <= 0) return err('没有可回退的使用');
+      k.uses -= 1;
+      store.write('knowledge', list);
+      return json({ ok: true, uses: k.uses }, 201);
+    }
+    // 配额约束：次数型配额用满则拒绝（无上限 countMax=0 不拦）
+    if (q.countMax > 0 && k.uses >= q.countMax) return err('使用次数已达配额上限（' + q.countMax + '）');
+    const note = String(b.note || '').trim() || '使用 1 次';
+    k.uses += 1;
+    k.useLog.push(A.normalizeKgLog({ note, date: b.date }));
+    // 配额联动：次数型配额同步 +1；可下载/调用额度型走 quotaKey
+    const qk = String(b.quotaKey || '');
+    if (qk === 'download' && q.download > 0) q.download -= 1;
+    else if (qk === 'call' && q.call > 0) q.call -= 1;
+    else if (q.countMax > 0) q.count += 1;
+    k.quota = q;
+    store.write('knowledge', list);
+    return json({ ok: true, uses: k.uses }, 201);
+  }
+  // 付费流水：续费/充值/退款/赠送（append-only，不改累计 price）
+  const kgHisMatch = pathname.match(/^\/api\/knowledge\/([^/]+)\/history$/);
+  if (kgHisMatch && method === 'POST') {
+    const list = getKnowledge();
+    const k = list.find((x) => x.id === kgHisMatch[1]);
+    if (!k) return err('资源不存在', 404);
+    const b = body || {};
+    const amount = Number(b.amount);
+    if (!isFinite(amount) || amount < 0) return err('金额必须不小于 0');
+    if (amount > MAX_MONEY) return err('金额超出允许范围');
+    const rec = A.normalizeKgHistory({ type: b.type, note: b.note, amount, date: b.date });
+    k.history.push(rec);
+    store.write('knowledge', list);
+    return json({ ok: true, history: rec }, 201);
+  }
+
+  // ---- 扩展资产：聚合统计 / 统一动态流 / 到期扫描 ----
+  if (pathname === '/api/assets/stats' && method === 'GET') {
+    const mems = getMemberships();
+    const vchs = getVouchers();
+    const kgs = getKnowledge();
+    const myCards = getMyCards();
+    const idx = buildIndexes();
+    const now2 = new Date();
+    const computed = myCards.map((m) => computeMyCard(m, now2, idx));
+    // 会员/储值余额
+    const memBalance = mems.reduce((s, m) => s + (m.mode === 'amount' ? (Number(m.balance) || 0) : 0), 0);
+    const memCount = mems.length;
+    // 券剩余
+    const voucherCount = vchs.length;
+    const voucherRemainingCount = vchs.filter((v) => v.mode === 'count').reduce((s, v) => s + Math.max(0, A.voucherRemaining(v)), 0);
+    const voucherBalance = vchs.filter((v) => v.mode === 'amount').reduce((s, v) => s + (Number(v.balance) || 0), 0);
+    // 知识库
+    const kgTotal = kgs.reduce((s, k) => s + (Number(k.price) || 0), 0);
+    const kgActive = kgs.filter((k) => k.lifetime || !k.expiry || k.expiry >= U.todayStr()).length;
+    // 信用卡权益估值与核销率：管卡的权益没有「单次价值 value」概念，
+    // 核销率改为「本周期已用次数 / 总次数」的加权平均（unlimited -1 不计）
+    let benUsed = 0, benTotal = 0;
+    for (const m of computed) {
+      for (const b of m.benefits || []) {
+        const t = Number(b.total);
+        if (!Number.isFinite(t) || t < 0) continue; // 不限次不进比率
+        benUsed += Math.min(Number(b.used) || 0, t);
+        benTotal += t;
+      }
+    }
+    const redemptionRate = benTotal ? Math.round((benUsed / benTotal) * 100) : 0;
+    // 资产结构
+    const structure = [
+      { key: 'membership', label: '会员/储值余额', value: A.round2(memBalance + voucherBalance) },
+      { key: 'knowledge', label: '知识库累计投入', value: A.round2(kgTotal) },
+    ];
+    return json({
+      membership: { count: memCount, balance: A.round2(memBalance) },
+      voucher: { count: voucherCount, remainingCount: voucherRemainingCount, balance: A.round2(voucherBalance) },
+      knowledge: { count: kgs.length, totalSpend: A.round2(kgTotal), activeCount: kgActive },
+      benefit: { used: benUsed, total: benTotal, redemptionRate },
+      structure,
+    });
+  }
+  // 统一动态流：会员流水 + 券核销 + 知识使用 + 信用卡权益使用，合并倒序
+  if (pathname === '/api/assets/feed' && method === 'GET') {
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+    const items = [];
+    for (const m of getMemberships()) {
+      for (const t of m.transactions || []) {
+        items.push({ date: t.date, createdAt: t.createdAt, kind: 'membership', title: t.note || (t.kind === 'topup' ? '充值' : '消费'), sub: m.name, amount: t.kind === 'topup' ? Number(t.amount) || 0 : -(Number(t.amount) || 0) });
+      }
+    }
+    for (const v of getVouchers()) {
+      for (const t of v.transactions || []) {
+        items.push({ date: t.date, createdAt: t.createdAt, kind: 'voucher', title: t.note || (t.kind === 'topup' ? '充值' : '核销'), sub: (v.brand ? v.brand + ' · ' : '') + v.name, amount: t.kind === 'topup' ? Number(t.amount) || 0 : 0 });
+      }
+    }
+    for (const k of getKnowledge()) {
+      for (const u of k.useLog || []) {
+        items.push({ date: u.date, createdAt: u.createdAt, kind: 'knowledge', title: u.note || '使用', sub: k.title, amount: 0 });
+      }
+      for (const h of k.history || []) {
+        items.push({ date: h.date, createdAt: h.createdAt, kind: 'knowledge-pay', title: (h.note || h.type) + (h.amount ? ' ¥' + h.amount : ''), sub: k.title, amount: h.type === 'refund' ? -(Number(h.amount) || 0) : (Number(h.amount) || 0) });
+      }
+    }
+    // 信用卡权益使用（benefits 表）→ 卡名
+    const cardNameOf = new Map(getMyCards().map((m) => [m.id, (m.alias || m.name) + (m.bank ? '（' + m.bank + '）' : '')]));
+    for (const r of getBenefits()) {
+      items.push({ date: r.date, createdAt: r.createdAt, kind: 'benefit', title: r.note || '权益使用', sub: cardNameOf.get(r.myCardId) || '持卡', amount: 0 });
+    }
+    items.sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    return json(items.slice(0, limit));
+  }
+  // 到期扫描：会员/券/知识库未来 N 天临期清单（前端倒计时页 + 提醒引擎共用口径）
+  if (pathname === '/api/assets/expiring' && method === 'GET') {
+    const days = Math.min(365, Math.max(1, Number(url.searchParams.get('days')) || 60));
+    const now2 = new Date();
+    const out = [];
+    const scan = (list, kind, label) => {
+      for (const it of list || []) {
+        const left = A.daysLeftOf(it.expiry, now2);
+        if (left == null || left < 0 || left > days) continue;
+        out.push({
+          kind, label, id: it.id,
+          name: it.name || it.title || '未命名',
+          sub: it.brand || it.platform || '',
+          expiry: it.expiry, daysLeft: left,
+          value: kind === 'membership' ? (it.mode === 'amount' ? (Number(it.balance) || 0) : Math.max(0, A.membershipRemaining(it))) : (kind === 'voucher' ? Math.max(0, A.voucherRemaining(it)) : (Number(it.price) || 0)),
+        });
+      }
+    };
+    scan(getMemberships(), 'membership', '会员卡/储值卡');
+    scan(getVouchers(), 'voucher', '卡/票');
+    scan(getKnowledge().filter((k) => !k.lifetime), 'knowledge', '知识库订阅');
+    out.sort((a, b) => a.daysLeft - b.daysLeft);
+    return json(out);
+  }
+
   // ---- 提醒功能 ----
   if (pathname === '/api/notify/config' && method === 'GET') {
     // 推送 token 一律不回传真值。
@@ -1696,7 +2177,8 @@ async function runNotifyChecksInner(force) {
   const idx = buildIndexes();
   const now = new Date();
   const cards = getMyCards().map((m) => computeMyCard(m, now, idx));
-  const out = await reminder.runChecks(cards, cfg, notifier, now, getBills());
+  const assetData = { memberships: getMemberships(), vouchers: getVouchers(), knowledge: getKnowledge() };
+  const out = await reminder.runChecks(cards, cfg, notifier, now, getBills(), assetData);
   cfg.lastCheckAt = now.toISOString();
   // 回写时只覆盖「检查自身产生」的字段（lastCheckAt/sentLog/history），其余字段以最新配置为准。
   // 推送是网络操作（可能数秒），期间用户可能改了通道或规则；若直接回写整份 cfg 会把用户的改动抹掉。

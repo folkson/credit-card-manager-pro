@@ -26,7 +26,7 @@ const DEFAULT_CONFIG = {
     serverchan: { enabled: false, sendkey: '' },
     bark: { enabled: false, deviceKey: '', server: 'https://api.day.app', level: 'active', group: '管卡' },
   },
-  rules: { feeDays: [30, 7, 1], repayBeforeDays: 3, taskRemainDays: 3, billBeforeDays: 3, billOverdueRemind: 1 },
+  rules: { feeDays: [30, 7, 1], repayBeforeDays: 3, taskRemainDays: 3, billBeforeDays: 3, billOverdueRemind: 1, assetExpiryDays: 7 },
   sentLog: {},
   history: [],
 };
@@ -53,6 +53,7 @@ function normalizeConfig(raw) {
     cfg.rules.taskRemainDays = Number(r.rules.taskRemainDays) || 0;
     cfg.rules.billBeforeDays = r.rules.billBeforeDays == null ? DEFAULT_CONFIG.rules.billBeforeDays : (Number(r.rules.billBeforeDays) || 0);
     cfg.rules.billOverdueRemind = r.rules.billOverdueRemind == null ? 1 : (r.rules.billOverdueRemind ? 1 : 0);
+    cfg.rules.assetExpiryDays = Math.max(0, Math.min(90, Number(r.rules.assetExpiryDays) || 0));
   }
   cfg.sentLog = (r.sentLog && typeof r.sentLog === 'object') ? r.sentLog : {};
   cfg.history = Array.isArray(r.history) ? r.history.slice(0, 30) : [];
@@ -300,10 +301,13 @@ function diffDaysOf(dateStr, now) {
 }
 
 /** 执行检查并推送：去重（同一 key 只推一次）→ 发送 → 记录历史 */
-async function runChecks(cards, cfg, notifier, now, bills) {
+async function runChecks(cards, cfg, notifier, now, bills, assetData) {
   now = now || new Date();
   const date = todayStr(now);
-  const items = collectReminders(cards, cfg, now, bills);
+  // 第 5 类提醒源：会员卡/卡票/知识库到期（移植自 Benefit Tracker 的到期推送）。
+  // assetData 为空（旧调用方）时静默跳过，保持向后兼容。
+  const assetItems = assetData ? require('./assets').collectAssetExpiry(assetData, cfg, now) : [];
+  const items = collectReminders(cards, cfg, now, bills).concat(assetItems);
   const pending = items.filter((it) => !cfg.sentLog[it.key]);
   const results = [];
   for (const it of pending) {

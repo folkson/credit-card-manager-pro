@@ -62,6 +62,11 @@ docker run -d --name credit-card-manager -p 3000:3000 -v guanka-data:/app/data -
 | 备份 / 恢复 | 一键导出**全量个人数据 JSON**（持卡 + 权益 + 消费 + 账单 + 账单组，含卡种自动建库）；恢复支持**合并**（幂等，同 id 自动跳过，适合定期备份回灌）与**覆盖**（清空后以备份为准，适合迁移）两种模式，越界/非法字段自动钳制归一 |
 | 主题 | 白色/深色一键切换，选择自动记忆 |
 | 合并账单 | 把还款日相同的多张卡加入同一「账单组」，还款/账单提醒合并为 **1 条**（列出组内各卡与合计应还），不再逐卡刷屏；年费与月刷卡任务仍按卡独立 |
+| 卡/票管理 | 优惠券（按次）、储值卡（按余额）、满减券（满减门槛校验）三类统一管理；按商家分组、类型筛选；核销/回退/充值全流水；独立商家目录（可先建商家后加券） |
+| 会员储值 | 视频会员、健身年卡、储值卡等订阅资产；金额型（余额充值/消费）与次数型（使用/回退）两种模式；10 种分类分组展示；到期倒计时徽章 |
+| 知识库 | 课程/专栏/社群/订阅等知识资产；付费周期（月付/年付/终身）、价格、进度、账号、标签管理；使用记录 +1/-1、下载/调用配额联动；续费/充值/退款/赠送付费流水 |
+| 资产统计 | 会员余额、券剩余、知识库投入、权益核销率（加权）四大指标卡；资产结构条形图；统一动态流（会员流水+券核销+知识使用+权益使用合并倒序） |
+| 到期提醒扩展 | 会员卡/卡票/知识库订阅三类资产临期自动进入提醒引擎（`assetExpiryDays` 规则，默认提前 7 天，0=关闭） |
 | 日历订阅 | 生成 **ICS 订阅链接**，把还款日、年费日、账单到期、刷卡任务截止导入系统日历（Apple 日历 / Google 日历 / Outlook 等），订阅后自动更新；无需在应用内逐条查看提醒 |
 | 其他 | 卡种库升级自动合并新卡（按 银行+名称+卡组织+等级 去重）；数据原子写入防损坏 |
 
@@ -305,4 +310,21 @@ NODE_PATH=<jsdom所在node_modules> node tools/ui-test.js
 | POST | /api/mycards/:id/points | 积分抵扣开关 |
 | POST | /api/mycards/:id/asset | 资产达标开关 |
 | GET | /api/calendar.ics?token=\<AUTH_TOKEN\> | ICS 日历订阅（还款日/年费日/账单到期/刷卡任务截止；约 6 个月滚动窗口，提前 1 天提醒） |
+| GET | /api/assets/meta | 扩展资产枚举（会员分类/券类型/知识库类型与分类/周期） |
+| GET | /api/assets/stats | 资产聚合统计（会员余额/券剩余/知识投入/权益核销率/资产结构） |
+| GET | /api/assets/feed?limit=N | 统一动态流（会员流水+券核销+知识使用+权益使用合并倒序） |
+| GET | /api/assets/expiring?days=N | 三类资产到期扫描（含 daysLeft/value） |
+| GET/POST | /api/memberships | 会员卡/储值卡查询（含 remaining）/新增 |
+| PUT/DELETE | /api/memberships/:id | 会员卡编辑/删除（编辑保留流水） |
+| POST | /api/memberships/:id/txn | 会员卡流水：金额型 topup/consume、次数型 use/undo |
+| GET/POST | /api/vouchers | 卡/票查询/新增（coupon/storedcard/fullred，旧类型自动映射） |
+| PUT/DELETE | /api/vouchers/:id | 券编辑/删除 |
+| POST | /api/vouchers/:id/use | 券核销/撤销（满减券校验门槛，body 传 amount/undo） |
+| POST | /api/vouchers/:id/topup | 储值型券充值/金额核销（body: `{ kind: "topup"|"consume", amount }`） |
+| GET/POST | /api/voucherbrands | 独立商家目录（同名查重） |
+| PUT/DELETE | /api/voucherbrands/:id | 商家编辑/删除 |
+| GET/POST | /api/knowledge | 知识库资源查询（含 active）/新增 |
+| PUT/DELETE | /api/knowledge/:id | 资源编辑（保留 useLog/history）/删除 |
+| POST | /api/knowledge/:id/use | 使用 +1/回退（quota 联动：countMax 拦截、download/call 扣减） |
+| POST | /api/knowledge/:id/history | 付费流水（renew/recharge/use/refund/gift） |
 | POST | /api/shutdown | 优雅退出（数据安全落盘） |
