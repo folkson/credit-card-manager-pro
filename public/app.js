@@ -157,6 +157,10 @@ const state = {
   // 卡/票页筛选
   voucherTypeFilter: 'all',
   knowledgeCatFilter: 'all',
+  // 会员储值页分类筛选：必须独立于 knowledgeCatFilter——
+  // 此前两页共用一个状态（靠 '__mem__' 哨兵区分），会员页选中的分类会串到知识库页
+  // 造成「当前分类下没有资源」的假空态，且下拉框选中态永远回退到「全部分类」
+  membershipCatFilter: 'all',
 };
 
 const CYCLE_BADGE = { '自然月': 'badge-blue', '自然年': 'badge-purple', '年费日': 'badge-orange' };
@@ -2078,7 +2082,7 @@ function renderVouchers() {
       '<span class="bank-name">' + esc(brand) + '</span>' +
       '<span class="bank-count">' + items.length + ' 张</span>' +
       '<span class="bank-actions" style="font-size:12px;color:var(--text-3)">' +
-      esc(summarizeBrand(brand)) + '</span></div>' +
+      esc(summarizeBrand(items)) + '</span></div>' +
       '<div class="bank-body">' +
       items.map(voucherRowHtml).join('') +
       '</div></div>';
@@ -2086,8 +2090,11 @@ function renderVouchers() {
   return html;
 }
 
-function summarizeBrand(brand) {
-  const items = (state.vouchers || []).filter((v) => (v.brand || '未指定商家') === brand);
+/**
+ * 商家行汇总：基于「当前筛选后」的券列表统计。
+ * 此前按商家名回读全量券列表，类型筛选（如只看储值卡）下汇总数字与行内容不符。
+ */
+function summarizeBrand(items) {
   let countLeft = 0, moneyLeft = 0;
   for (const v of items) {
     if (v.mode === 'amount') moneyLeft += Number(v.balance) || 0;
@@ -2286,7 +2293,7 @@ function openVoucherDetail(id) {
   const txns = (v.transactions || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const rows = txns.map((t) => '<tr><td>' + esc(t.date) + '</td>' +
     '<td><span class="badge ' + (t.kind === 'topup' ? 'badge-green' : 'badge-default') + '">' + (t.kind === 'topup' ? '充值' : '核销') + '</span></td>' +
-    '<td>' + (t.mode === 'amount' || Number(t.amount) ? fmtMoney(t.amount) : '1 次') + '</td>' +
+    '<td>' + (v.mode === 'amount' ? fmtMoney(t.amount) : '1 次') + '</td>' +
     '<td>' + esc(t.note || '') + '</td></tr>').join('');
   const info = v.mode === 'amount'
     ? infoItem('余额', fmtMoney(v.balance))
@@ -2410,13 +2417,13 @@ function renderMemberships() {
     '<div class="toolbar"><button class="btn primary" id="btn-mem-add">＋ 添加会员卡</button>' +
     '<div class="spacer"></div>' +
     '<select id="mem-cat-filter" class="filter-select">' +
-    option2('all', '全部分类', state.knowledgeCatFilter === '__mem__' ? 'all' : state.knowledgeCatFilter) +
-    Object.keys(meta).map((k) => option2(k, meta[k], state.knowledgeCatFilter === '__mem__' ? state.knowledgeCatFilter : 'all')).join('') +
+    option2('all', '全部分类', state.membershipCatFilter) +
+    Object.keys(meta).map((k) => option2(k, meta[k], state.membershipCatFilter)).join('') +
     '</select></div>';
 
   if (!list.length) return html + emptyBox('还没有会员卡，点「添加会员卡」开始管理');
 
-  const cat = state.knowledgeCatFilter !== '__mem__' && state.knowledgeCatFilter !== 'all' ? state.knowledgeCatFilter : '';
+  const cat = state.membershipCatFilter === 'all' ? '' : state.membershipCatFilter;
   const filtered = cat ? list.filter((m) => m.category === cat) : list;
   if (!filtered.length) return html + emptyBox('当前分类下没有会员卡');
 
@@ -2909,7 +2916,7 @@ function bindAssetPageEvents() {
     $('#btn-mem-add', app).addEventListener('click', () => openMemModal(null));
     const catSel = $('#mem-cat-filter', app);
     if (catSel) catSel.addEventListener('change', (e) => {
-      state.knowledgeCatFilter = e.target.value === 'all' ? '__mem__' : e.target.value;
+      state.membershipCatFilter = e.target.value;
       render();
     });
     $$('.card-row[data-mem-id]', app).forEach((row) => {

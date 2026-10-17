@@ -254,15 +254,23 @@ function collectReminders(cards, cfg, now, bills) {
   }
   // ④ 账单流水：未还账单到期前提醒 + 已过到期日仍未还的逾期提醒。
   //    同组同月合并成一条（组内还款日一致，到期日相同；被手工改脏时取最早那条作为提醒日）
+  const today = todayStr(now);
   const byId = new Map((cards || []).map((m) => [m.id, m]));
   const billBuckets = new Map(); // key: 组 → 月（同组按月归并）；无组时按单张卡
   for (const b of bills || []) {
     if (b.paid === '已还' || !b.dueDate) continue;
-    const target = new Date(b.dueDate + 'T00:00:00');
-    if (isNaN(target.getTime())) continue;
-    const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const daysLeft = Math.round((target - t0) / 86400000);
-    const overdue = daysLeft < 0;
+    // 逾期判定用「日期字符串比较」而不是解析成 Date 再算差值：
+    // 目标是和用户在 UI 上标记「已还」的时点保持同一口径——只要 dueDate >= 今天
+    // 就不算逾期。用毫秒差取整时，「宽限最后一夜标记已还、次日 00:00 定时器触发」
+    // 会因毫秒误差被误判逾期（刚好错过宽限期的最后一天）。
+    // 脏日期防御（格式或日历不合法，如手改数据产生的 2026-13-01 / 2026-02-00 / 2026-02-30）：
+    // 全部跳过，与旧 isNaN 守卫同口径；日历校验须按分量比对而不能只看 isNaN——
+    // V8 会把 2026-02-30 静默滚动成 3 月 2 日，getTime 并非 NaN（与 util.parseDateStr 同策略）。
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.dueDate)) continue;
+    const [yy, mm, dd] = b.dueDate.split('-').map(Number);
+    if (mm < 1 || mm > 12 || dd < 1 || dd > daysInMonth(yy, mm)) continue;
+    const overdue = b.dueDate < today;
+    const daysLeft = diffDaysOf(b.dueDate, now);
     if (overdue ? !cfg.rules.billOverdueRemind : daysLeft > cfg.rules.billBeforeDays) continue;
 
     const m = byId.get(b.myCardId);
@@ -329,7 +337,11 @@ async function runChecks(cards, cfg, notifier, now, bills, assetData) {
     });
   }
   pruneSentLog(cfg, now);
-  return { checked: items.length, sent: pending.length, results };
+  // sent 语义 = 本次实际推送成功的项数（无通道/全部通道失败不计入）。
+  // 原实现返回 pending.length，失败项也被计入「已推送」，
+  // 前端与调度日志把失败当成成功展示，去重失败的项下轮也不会再试（key 已写入 sentLog）。
+  const sent = results.filter((r) => r.ok).length;
+  return { checked: items.length, sent, results };
 }
 
 /**
