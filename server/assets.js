@@ -17,7 +17,7 @@
 
 const U = require('./util');
 
-const MAX_MONEY = 100000000; // 与 routes.js 一致的金额上限
+const MAX_MONEY = 100000000; // 与 routes.js MAX_MONEY 一致（1 亿，防脏数据封顶）
 
 // ---------- 类别常量（与 bt 对齐） ----------
 const MEM_CATEGORIES = ['video', 'ecard', 'dining', 'fitness', 'beauty', 'travel', 'course', 'tool', 'subscription', 'other'];

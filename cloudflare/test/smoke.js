@@ -15,12 +15,12 @@ const assert = require('assert');
 
 const ROOT = __dirname + '/..';
 
-// ---- 模拟 DO Storage ----
+// ---- 模拟 DO Storage（对齐真实 API：get/put/delete 返回 Promise；put 微任务后落盘）----
 class MockStorage {
   constructor() { this.map = new Map(); }
-  get(k) { return this.map.has(k) ? this.map.get(k) : undefined; }
-  put(k, v) { this.map.set(k, structuredClone(v)); return Promise.resolve(); }
-  delete(k) { this.map.delete(k); return Promise.resolve(); }
+  get(k) { return Promise.resolve(this.map.has(k) ? this.map.get(k) : undefined); }
+  put(k, v) { return Promise.resolve().then(() => { this.map.set(k, structuredClone(v)); }); }
+  delete(k) { return Promise.resolve().then(() => { this.map.delete(k); }); }
 }
 
 // ---- 构造 globalThis.NOW / ENV（do.js 在运行时注入的等价物）----
@@ -40,18 +40,22 @@ function ok(cond, name) {
 async function main() {
   const state = { storage: new MockStorage() };
   const store = new Store(state);
+  await store.warmup(); // v1.0.1 契约：先预热（冷启动 await 拉持久层进缓存）再走同步读
   routes.init(store);
 
   console.log('== 1. Store 基础 ==');
   store.write('settings', { theme: 'dark' });
+  await store.flush();
   ok(state.storage.map.has('ds:settings'), 'write 落盘 DO Storage');
   ok(store.readObject('settings', {}).theme === 'dark', 'read 回读缓存');
   const store2 = new Store(state); // 新实例（模拟 DO 重启）
+  await store2.warmup();           // 预热后同步读全部命中缓存
   ok(store2.readObject('settings', {}).theme === 'dark', '重启后从持久层恢复');
-  state.storage.put('ds:cards', 'not-an-array'); // 类型损坏
+  await state.storage.put('ds:cards', 'not-an-array'); // 类型损坏（发生在重启前，需 await 落盘）
   const store3 = new Store(state);
+  await store3.warmup(); // warmup 内完成类型校验 + 坏值隔离
   ok(Array.isArray(store3.readArray('cards')) && store3.readArray('cards').length === 0, '非数组数据隔离回退空数组');
-  ok(String(state.storage.get('bad:cards') || state.storage.map.has('bad:cards') || true), '坏数据已隔离');
+  ok(store3.warnings.some((w) => w.includes('cards') && w.includes('隔离')), '坏数据已隔离并告警');
 
   console.log('== 2. NOW() 时区语义 ==');
   const d = nowBJ();

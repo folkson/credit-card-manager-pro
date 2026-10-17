@@ -8,6 +8,16 @@ const ROOT = path.resolve(__dirname, '..');
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-assets-'));
 process.env.DATA_DIR = DATA;
 
+// 预置脏数据（服务器启动前写入；server 有内存缓存，启动后改文件不可见）：
+// - vouchers 含未知 type「movie」（旧版遗留类型，模拟手改/旧数据文件）
+// - knowledge 缺 useLog/history/quota 数组字段
+fs.writeFileSync(path.join(DATA, 'vouchers.json'), JSON.stringify([
+  { id: 'dirty-vou', brand: '脏数据商家', name: '未知类型券', type: 'movie', totalUses: 2, usedUses: 0, balance: 0, createdAt: '2026-01-01T00:00:00.000Z' },
+]));
+fs.writeFileSync(path.join(DATA, 'knowledge.json'), JSON.stringify([
+  { id: 'dirty-kg', title: '缺数组字段资源', uses: 0, price: 0, createdAt: '2026-01-01T00:00:00.000Z' },
+]));
+
 const server = require(ROOT + '/server/index.js');
 const U = require(ROOT + '/server/util');
 
@@ -147,6 +157,20 @@ async function main() {
     JSON.stringify(r.body).slice(0, 200));
   r = await api('GET', '/api/memberships', undefined, token);
   check('replace 后会员卡余额正确', r.status === 200 && r.body.length >= 1 && r.body.some((m) => m.name === '腾讯视频VIP' && m.balance === 70), JSON.stringify(r.body).slice(0, 150));
+
+  // ---------- 脏数据容错（预置在启动前的数据文件里，见文件头部） ----------
+  console.log('\n== dirty data tolerance ==');
+  r = await api('GET', '/api/vouchers', undefined, token);
+  const dirty = (r.body || []).find((x) => x.id === 'dirty-vou');
+  check('脏 type 不炸列表接口', r.status === 200 && !!dirty, 'status=' + r.status);
+  check('脏 type 回退优惠券标签', dirty && dirty.typeLabel === '优惠券', 'typeLabel=' + (dirty && dirty.typeLabel));
+  r = await api('POST', '/api/knowledge/dirty-kg/use', {}, token);
+  check('缺 useLog 数组时核销不 500', r.status === 201 && r.body.uses === 1, JSON.stringify(r.body).slice(0, 100));
+  r = await api('POST', '/api/knowledge/dirty-kg/history', { type: 'renew', amount: 10 }, token);
+  check('缺 history 数组时流水不 500', r.status === 201, JSON.stringify(r.body).slice(0, 100));
+  r = await api('GET', '/api/knowledge', undefined, token);
+  const dk = (r.body || []).find((x) => x.id === 'dirty-kg');
+  check('兜底数组已写入', dk && Array.isArray(dk.useLog) && dk.useLog.length === 1 && Array.isArray(dk.history) && dk.history.length === 1, JSON.stringify(dk && { u: dk.useLog && dk.useLog.length, h: dk.history && dk.history.length }));
 
   // ---------- 清理 ----------
   console.log('\n== cleanup ==');

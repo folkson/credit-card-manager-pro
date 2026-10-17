@@ -100,10 +100,19 @@ class Store {
    */
   write(name, data) {
     this.cache.set(name, data);
-    fs.mkdirSync(this.dir, { recursive: true });
-    const tmp = this._file(name) + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(data, null, PRETTY_JSON ? 2 : 0));
-    fs.renameSync(tmp, this._file(name));
+    const file = this._file(name);
+    const tmp = file + '.tmp';
+    const payload = JSON.stringify(data, null, PRETTY_JSON ? 2 : 0);
+    try {
+      fs.writeFileSync(tmp, payload);
+    } catch (e) {
+      // 目录缺失（卷被清理等）：重建后重试一次；其余错误照常抛出。
+      // 正常路径不再每次 mkdirSync（此前每笔写入多一次系统调用）
+      if (e.code !== 'ENOENT') throw e;
+      fs.mkdirSync(this.dir, { recursive: true });
+      fs.writeFileSync(tmp, payload);
+    }
+    fs.renameSync(tmp, file);
   }
 }
 

@@ -370,8 +370,15 @@ function computeMyCard(mc, now, idx) {
     // 展开全部使用态：used / remaining / unlimited / expired / exhausted
     return { ...b, ...u };
   });
-  const monthSpend = recs.amount.filter((r) => r.date >= monthStart).reduce((s, r) => s + (Number(r.amount) || 0), 0);
-  const yearSpend = recs.amount.filter((r) => r.date >= yearStart).reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  // 消费统计：单趟扫描同时累计 月/年/总 的金额与笔数
+  // （此前对同一 recs.amount 做 5 趟 filter/reduce：monthSpend/yearSpend/totalSpend/monthCount/yearCount）
+  let monthSpend = 0, yearSpend = 0, totalSpend = 0, monthCount = 0, yearCount = 0;
+  for (const r of recs.amount) {
+    const a = Number(r.amount) || 0;
+    totalSpend += a;
+    if (r.date >= monthStart) { monthSpend += a; monthCount++; }
+    if (r.date >= yearStart) { yearSpend += a; yearCount++; }
+  }
   // 还款信息（宽限期 + 两种还款方式）与预警分级
   const payment = D.paymentInfo(mc, now);
   const feeStatus = feeStatusOf(mc, now, ws);
@@ -396,9 +403,9 @@ function computeMyCard(mc, now, idx) {
     billGroupId: mc.billGroupId || '',
     billGroupName: groupNameOf(mc.billGroupId),
     recent: recs.amount.slice().sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 5),
-    monthSpend, yearSpend, totalSpend: recs.amount.reduce((s, r) => s + (Number(r.amount) || 0), 0),
-    monthCount: recs.amount.filter((r) => r.date >= monthStart).length,
-    yearCount: recs.amount.filter((r) => r.date >= yearStart).length,
+    monthSpend, yearSpend, totalSpend,
+    monthCount,
+    yearCount,
     totalCount: recs.amount.length,
     monthProgress: mc.monthlySpendTarget > 0 ? Math.min(100, Math.round((monthSpend / mc.monthlySpendTarget) * 100)) : 0,
     feeDays: days,
@@ -1672,6 +1679,7 @@ async function handle(method, pathname, url, body, req) {
       if (m.usedUses >= m.totalUses) return err('次数已用完');
       const txn = A.normalizeTxn({ kind: 'consume', amount: 0, note: b.note || '使用 1 次', date: b.date });
       m.usedUses += 1;
+      if (!Array.isArray(m.transactions)) m.transactions = []; // 手改数据缺流水数组时兜底
       m.transactions.push(txn);
       store.write('memberships', list);
       return json({ ok: true, usedUses: m.usedUses, txn }, 201);
@@ -1687,7 +1695,13 @@ async function handle(method, pathname, url, body, req) {
 
   // ---- 扩展资产：卡/票（券）----
   if (pathname === '/api/vouchers' && method === 'GET') {
-    const list = getVouchers().map((v) => ({ ...v, remaining: A.voucherRemaining(v), typeLabel: A.VOUCHER_TYPE_META[v.type].l }));
+    const list = getVouchers().map((v) => ({
+      ...v,
+      remaining: A.voucherRemaining(v),
+      // type 兜底：数据文件被手改/旧版遗留类型（normalizeVoucher 只在写入时归一化），
+      // 直读时 type 可能不在 META 里，查表 undefined.l 会 500 整个列表接口
+      typeLabel: (A.VOUCHER_TYPE_META[v.type] || A.VOUCHER_TYPE_META[A.VOUCHER_TYPE_LEGACY[v.type] || 'coupon']).l,
+    }));
     return json(list);
   }
   if (pathname === '/api/vouchers' && method === 'POST') {
@@ -1727,6 +1741,7 @@ async function handle(method, pathname, url, body, req) {
     if (b.undo) {
       if (v.usedUses <= 0) return err('没有可撤销的核销');
       v.usedUses -= 1;
+      if (!Array.isArray(v.transactions)) v.transactions = []; // 手改数据缺流水数组时兜底
       v.transactions.push(A.normalizeTxn({ kind: 'consume', amount: 0, note: b.note || '撤销核销', date: b.date }));
       store.write('vouchers', list);
       return json({ ok: true, usedUses: v.usedUses }, 201);
@@ -1740,6 +1755,7 @@ async function handle(method, pathname, url, body, req) {
     }
     const txn = A.normalizeTxn({ kind: 'consume', amount: 0, note: b.note || '使用 1 次', date: b.date });
     v.usedUses += 1;
+    if (!Array.isArray(v.transactions)) v.transactions = [];
     v.transactions.push(txn);
     store.write('vouchers', list);
     return json({ ok: true, usedUses: v.usedUses }, 201);
@@ -1759,6 +1775,7 @@ async function handle(method, pathname, url, body, req) {
     const txn = A.normalizeTxn({ kind: b.kind === 'topup' ? 'topup' : 'consume', amount, note: b.note, date: b.date });
     if (txn.kind === 'topup') v.balance = A.round2(v.balance + amount);
     else v.balance = A.round2(v.balance - amount);
+    if (!Array.isArray(v.transactions)) v.transactions = [];
     v.transactions.push(txn);
     store.write('vouchers', list);
     return json({ ok: true, balance: v.balance, txn }, 201);
@@ -1848,6 +1865,7 @@ async function handle(method, pathname, url, body, req) {
     if (q.countMax > 0 && k.uses >= q.countMax) return err('使用次数已达配额上限（' + q.countMax + '）');
     const note = String(b.note || '').trim() || '使用 1 次';
     k.uses += 1;
+    if (!Array.isArray(k.useLog)) k.useLog = []; // 手改数据缺使用记录数组时兜底
     k.useLog.push(A.normalizeKgLog({ note, date: b.date }));
     // 配额联动：次数型配额同步 +1；可下载/调用额度型走 quotaKey
     const qk = String(b.quotaKey || '');
@@ -1869,6 +1887,7 @@ async function handle(method, pathname, url, body, req) {
     if (!isFinite(amount) || amount < 0) return err('金额必须不小于 0');
     if (amount > MAX_MONEY) return err('金额超出允许范围');
     const rec = A.normalizeKgHistory({ type: b.type, note: b.note, amount, date: b.date });
+    if (!Array.isArray(k.history)) k.history = []; // 手改数据缺流水数组时兜底
     k.history.push(rec);
     store.write('knowledge', list);
     return json({ ok: true, history: rec }, 201);
@@ -2070,8 +2089,9 @@ function clampDay(v, dflt) {
   return Math.min(31, n);
 }
 
-// 非负金额（额度/目标/年费）：空值/负值回退默认，封顶 1 万亿防脏数据
-const MAX_MONEY = 1e12;
+// 非负金额（额度/目标/年费）：空值/负值回退默认，封顶 1 亿防脏数据
+// （与 assets.js MAX_MONEY 保持一致：此前 routes 1e12 / assets 1e8 两处上限不同，且注释互相声称一致）
+const MAX_MONEY = 1e8;
 const MAX_COUNT = 1e6;
 // 单次备份导入的持卡数上限：防手改的超大文件拖垮同步写（正常个人规模远低于此）
 const MAX_IMPORT_CARDS = 500;

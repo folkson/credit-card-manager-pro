@@ -26,8 +26,13 @@ export class GuankaDO {
     // globalThis 注入：vendored 代码通过裸标识符 NOW / ENV 访问
     globalThis.NOW = nowBJ;
     globalThis.ENV = env;
-    // init 内含卡种播种 + 数据自愈（幂等，重复调用无害）
-    routes.init(this.store);
+    // 预热持久层（await 全量进缓存）+ 业务初始化（卡种播种 + 数据自愈，幂等）。
+    // blockConcurrencyWhile：初始化完成前 block 其他请求，保证后续同步读必命中缓存
+    // （真实 DO Storage 的 get/put 返回 Promise，必须 await——v1.0.1 修复冷启动误隔离）。
+    state.blockConcurrencyWhile(async () => {
+      await this.store.warmup();
+      routes.init(this.store);
+    });
     this.ready = true;
   }
 
@@ -102,6 +107,8 @@ export class GuankaDO {
           host: req.headers.get('host'),
         },
       });
+      // 请求收尾：等待全部排队落盘写完成；写失败在此抛出 → 500（对齐 Node 版同步写抛错语义）
+      await this.store.flush();
       if (result === undefined) return resp(404, { error: 'Not found' });
       if (result.shutdown) {
         // Workers 无进程退出概念：数据已在 DO Storage 强一致持久化，等价语义是「无需退出」
@@ -137,6 +144,7 @@ export class GuankaDO {
   async runCronChecks() {
     try {
       const out = await routes.runNotifyChecks(false);
+      await this.store.flush(); // 提醒检查可能回写 notify（lastCheckAt/sentLog），等待落盘
       if (out && !out.skipped) {
         console.log('[管卡] 提醒检查完成：待提醒 %d 项，已推送 %d 项', out.checked || 0, out.sent || 0);
       }
