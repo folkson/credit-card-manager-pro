@@ -1,0 +1,33 @@
+name = "guanka"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 前端 SPA：cloudflare/public（构建时从 ../public 拷贝），Workers Assets 自动
+# 处理 ETag / 304 / gzip / brotli，SPA 兜底（非文件路径回 index.html）由
+# assets.not_found_handling 控制。
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+# Worker 先行：/api/* 必须经过鉴权守卫；静态资源在 worker 里 env.ASSETS.fetch() 兜底
+run_worker_first = true
+
+# 单实例 Durable Object：全部业务状态集中一处，读-改-写串行化对齐原版单线程语义
+[[durable_objects.bindings]]
+name = "GUANKA_DO"
+class_name = "GuankaDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GuankaDO"]
+
+# 提醒调度：对应原版「常驻进程每 10 分钟探测一次」（实际推送节奏仍由 notify 配置的
+# intervalMinutes 节流，Cron 只是心跳）
+[triggers]
+crons = ["*/10 * * * *"]
+
+# 部署必填：AUTH_TOKEN（wrangler secret put AUTH_TOKEN）
+# 可选：NOTIFY_*_URL 等推送端点覆盖，语义与 Docker 版同名变量一致
+# [vars]
+# NOTIFY_BARK_URL = "https://api.day.app"

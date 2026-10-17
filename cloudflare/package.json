@@ -1,0 +1,16 @@
+{
+  "name": "guanka-cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "description": "管卡 — 信用卡管理工具（Cloudflare Workers 版）",
+  "scripts": {
+    "vendor": "node scripts/vendor.js",
+    "copy-public": "node -e \"const fs=require('fs');fs.mkdirSync('public',{recursive:true});for(const f of fs.readdirSync('../public'))fs.copyFileSync('../public/'+f,'public/'+f)\"",
+    "build": "npm run vendor && npm run copy-public",
+    "preflight": "node scripts/preflight.js",
+    "deploy": "npm run build && npm run preflight && wrangler deploy",
+    "dev": "npm run build && wrangler dev",
+    "test": "node test/smoke.js"
+  },
+  "devDependencies": {}
+}
