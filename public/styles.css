@@ -91,9 +91,16 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .theme-toggle:hover { border-color: var(--gold); }
 
 /* ============ 布局 ============ */
-.app { max-width: 1180px; margin: 0 auto; padding: 20px 24px 60px; }
+.app { max-width: 1180px; margin: 0 auto; padding: 20px 24px 24px; }
 .page-title { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 .page-desc { color: var(--text-3); font-size: 13px; margin-bottom: 18px; }
+
+/* ============ 页脚版本信息 ============ */
+.footer {
+  max-width: 1180px; margin: 0 auto; padding: 0 24px 28px;
+  font-size: 12px; color: var(--text-3); text-align: center;
+  user-select: none;
+}
 
 /* ============ 统计卡 ============ */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }

@@ -169,9 +169,21 @@ const CYCLE_BADGE = { '自然月': 'badge-blue', '自然年': 'badge-purple', '�
 const FEE_BADGE = { default: 'badge-default', yellow: 'badge-yellow', red: 'badge-red' };
 
 // ---------- 启动 ----------
+// 页脚版本信息：以服务端 /api/health 返回的版本为准（免鉴权，登录前后都可见；
+// 前端静态文件可能被浏览器缓存，后端版本才是当前真实运行的版本）
+async function fillVersion() {
+  const el = document.getElementById('footer');
+  if (!el) return;
+  try {
+    const h = await api('/api/health');
+    el.textContent = '管卡 v' + (h.version || '1.0.0');
+  } catch (e) { /* 拉不到就保留占位文本，不阻塞启动 */ }
+}
+
 async function boot() {
   applyTheme(state.settings.theme);
   bindNav();
+  fillVersion();
   await checkAuth();
   await loadAll();
   // 登录态建立后：若已开启 gist 云同步，本地无数据时自动从云端恢复
