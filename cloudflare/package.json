@@ -1,6 +1,6 @@
 {
   "name": "guanka-cloudflare",
-  "version": "1.0.1",
+  "version": "1.1.1",
   "private": true,
   "description": "管卡 — 信用卡管理工具（Cloudflare Workers 版）",
   "scripts": {

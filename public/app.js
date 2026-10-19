@@ -1140,7 +1140,7 @@ function notifyModalHtml(cfg) {
     '</div></div>' +
     '<div class="notify-rules"><h4>日历订阅（ICS）</h4>' +
     '<div style="font-size:12px;color:var(--text-2);line-height:1.7;margin-bottom:8px">' +
-    '把还款日、年费日、账单到期、刷卡任务截止导入系统日历（Apple 日历 / Google 日历 / Outlook 等订阅后自动更新）。' +
+    '把还款日、年费日、账单到期、刷卡任务截止，以及会员卡/卡票/知识库的到期日导入系统日历（Apple 日历 / Google 日历 / Outlook 等订阅后自动更新）。' +
     '因日历客户端无法携带登录 Cookie，订阅链接需带访问令牌——在下方输入令牌生成完整链接，或手动拼接 <code>/api/calendar.ics?token=你的令牌</code>。' +
     '</div>' +
     '<div class="form-grid">' +
@@ -1152,7 +1152,7 @@ function notifyModalHtml(cfg) {
     '</div>' +
     '<div id="n-ics-out" style="margin-top:8px;display:none">' +
     '<input id="n-ics-url" readonly style="width:100%;font-size:12px;font-family:monospace;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-2);color:var(--text-1)">' +
-    '<div style="font-size:11px;color:var(--text-3);margin-top:4px">包含事件：还款日（含宽限期）、年费日、账单到期（未还含逾期）、刷卡任务截止；约 6 个月滚动窗口；提前 1 天提醒。</div>' +
+    '<div style="font-size:11px;color:var(--text-3);margin-top:4px">包含事件：还款日（含宽限期）、年费日、账单到期（未还含逾期）、刷卡任务截止、资产到期（会员卡/储值卡、卡/票、知识库订阅）；约 6 个月滚动窗口；提前 1 天提醒。</div>' +
     '</div>' +
     '</div>' +
     '<div id="n-result" class="notify-result"></div>' +
@@ -1257,6 +1257,7 @@ async function openBillGroupsModal(focusGid) {
 
   let html = '<div style="font-size:13px;color:var(--text-2);line-height:1.6;margin-bottom:12px">' +
     '把<b>还款日相同</b>的几张卡加入同一组，还款提醒就会合并成 <b>1 条</b>（列出组内所有卡与银行到期日），不再逐卡重复推送。<br>' +
+    '合并看的是<b>还款日</b>——同一银行的卡只要还款日相同就能合并，不同银行的卡还款日相同也可以合并。<br>' +
     '年费提醒、月刷卡任务仍按单卡推送（这两类卡片之间本就独立）。</div>';
 
   if (groups.length) {
@@ -1331,7 +1332,14 @@ async function openBillGroupsModal(focusGid) {
  */
 function memberChecklistHtml(checkedIds, currentGid) {
   const groups = state.billGroups || [];
-  return (state.myCards || []).map((m) => {
+  // 按还款节奏排序：还款日相同的卡天然相邻，用户勾选时可合并的卡一目了然
+  // （合并条件是还款日相同，与银行无关；同银行但还款日不同的卡不能合并）
+  const cards = (state.myCards || []).slice().sort((a, b) => {
+    const ka = (a.payment && a.payment.lastPayDate) || '';
+    const kb = (b.payment && b.payment.lastPayDate) || '';
+    return ka.localeCompare(kb) || String(a.bank).localeCompare(String(b.bank), 'zh');
+  });
+  return cards.map((m) => {
     const g = groups.find((x) => x.id === m.billGroupId);
     const isSelf = !!(g && currentGid && g.id === currentGid);
     const label = (m.alias || m.name) + ' · ' + m.bank + ' · 还款 ' + ((m.payment && m.payment.lastPayDate) || '—');
@@ -1948,29 +1956,46 @@ function myCardFormHtml(c, m) {
   );
 }
 
-/** 合并账单组下拉：空 = 不合并；只列出「与本卡还款日一致」或「尚无成员」的组 */
+/** 合并账单组下拉：空 = 不合并；列出全部组 + 尚无可选组时的可合并卡提示 */
 function groupSelectHtml(m) {
   const cur = (m && m.billGroupId) || '';
+  const groups = state.billGroups || [];
   const opts = ['<option value="">不合并（单独提醒）</option>'];
-  for (const g of state.billGroups || []) {
+  for (const g of groups) {
     if (g.id === cur) { opts.push('<option value="' + esc(g.id) + '" selected>' + esc(g.name) + '</option>'); continue; }
     // 已有成员的组：还款日不一致的不列出来，避免选完才被服务端拒绝
     if (g.memberCount > 0 && !sameRepayAsGroup(m, g)) continue;
-    opts.push('<option value="' + esc(g.id) + '">' + esc(g.name) + '（' + g.memberCount + ' 张）</option>');
+    opts.push('<option value="' + esc(g.id) + '">' + esc(g.name) + '（' + g.memberCount + ' 张 · 还款 ' + esc(g.lastPayDate || '—') + '）</option>');
   }
-  return '<select id="f-billgroup">' + opts.join('') + '</select>';
+  let html = '<select id="f-billgroup">' + opts.join('') + '</select>';
+  // 没有任何可选组（自己当前组除外）时给出指引：组需先在「合并账单」里创建；
+  // 顺带列出与本卡还款日相同的卡，用户照着名字去建组即可——同银行/不同银行均可，
+  // 决定条件是还款日而非银行
+  const joinable = groups.filter((g) => g.id !== cur && (g.memberCount === 0 || sameRepayAsGroup(m, g)));
+  if (!joinable.length && state.myCards && state.myCards.length > 1) {
+    const peers = state.myCards.filter((x) => x.id !== (m && m.id) && sameRepay(x, m));
+    html += '<div style="font-size:11px;color:var(--text-3);margin-top:4px;line-height:1.6">' +
+      '还没有可选的合并账单组。先点页面工具栏「合并账单」新建组（至少选 2 张卡）' +
+      (peers.length ? '；与本卡还款日（' + esc((m && m.payment && m.payment.lastPayDate) || '—') + '）相同的卡：' + peers.map((x) => esc(x.alias || x.name)).join('、') : '（合并条件是还款日相同，同银行或不同银行都可以）') +
+      '</div>';
+  }
+  return html;
+}
+
+/** 前端预判：两卡还款节奏是否一致（与服务端 sameRepaySchedule 同口径的简化版） */
+function sameRepay(a, b) {
+  if (!a || !b || !a.payment || !b.payment) return false;
+  return a.payment.lastPayDate === b.payment.lastPayDate
+    && (a.repayMode || 'fixed') === (b.repayMode || 'fixed')
+    && Number(a.billingDay) === Number(b.billingDay)
+    && Number(a.graceDays || 0) === Number(b.graceDays || 0);
 }
 
 /** 前端预判：本卡与组内首个成员的还款节奏是否一致（最终以服务端校验为准） */
 function sameRepayAsGroup(m, g) {
   if (!m) return g.memberCount === 0;
   const peer = (state.myCards || []).find((x) => x.billGroupId === g.id);
-  if (!peer || !m.payment || !peer.payment) return g.memberCount === 0;
-  // 组内一致性由「最后还款日 + 还款方式 + 账单日 + 宽限期」共同决定，任一项不同即视为不一致
-  return m.payment.lastPayDate === peer.payment.lastPayDate
-    && (m.repayMode || 'fixed') === (peer.repayMode || 'fixed')
-    && Number(m.billingDay) === Number(peer.billingDay)
-    && Number(m.graceDays || 0) === Number(peer.graceDays || 0);
+  return sameRepay(m, peer) || g.memberCount === 0;
 }
 
 function benefitEditRow(b, i) {  const cycles = state.meta.resetCycles || [];

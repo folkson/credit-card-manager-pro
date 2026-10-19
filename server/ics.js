@@ -8,6 +8,9 @@
  *   - 年费日：nextFeeDate（下次年费收取日，>= 今天）
  *   - 账单到期：bills 流水中未还账单的 dueDate（含已逾期）
  *   - 刷卡任务截止：有月度目标卡的当月最后一天
+ *   - 资产到期：会员卡/储值卡、卡/票、知识库订阅（非终身）的 expiry，
+ *     日历视角展示窗口内全部到期日——不受推送提醒「提前 N 天」窗口限制
+ *     （推送口径由 reminder/collectAssetExpiry 负责，两者职责不同）
  * UID 规则 guanka-<type>[-group]-<id>-<date>：跨刷新稳定，客户端据此做增量同步/去重。
  *
  * 时区策略：全天事件（VALUE=DATE）不带时区，日历客户端按本地时区解释，
@@ -75,8 +78,10 @@ function dstr(d) { return U.toDateStr(d); }
  * @param {Array} computed 已由 computeMyCard 算好的持卡列表
  * @param {Array} bills 账单流水
  * @param {Date} now
+ * @param {Object} assetData 扩展资产 { memberships, vouchers, knowledge }（可省略，
+ *                           省略时为旧调用方兼容——仅生成信用卡相关事件）
  */
-function collectEvents(computed, bills, now) {
+function collectEvents(computed, bills, now, assetData) {
   now = now || new Date();
   const horizon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + HORIZON_DAYS);
   const events = [];
@@ -194,6 +199,40 @@ function collectEvents(computed, bills, now) {
     });
   }
 
+  // ⑤ 资产到期（会员卡/储值卡、卡/票、知识库订阅；终身资源与无到期日的跳过）。
+  //    与推送提醒不同：日历展示窗口内的全部到期日，便于提前安排使用/续费
+  if (assetData && typeof assetData === 'object') {
+    const scanAssets = (list, kind, label) => {
+      for (const it of list || []) {
+        if (!it || !it.expiry) continue; // 无到期日（包括空串）不生成事件
+        const nm = it.name || it.title || '未命名';
+        const sub = it.brand || it.platform || '';
+        // 剩余量：membership/voucher 按类型口径；knowledge 不展示
+        let remain = '';
+        if (kind === 'membership') {
+          remain = it.mode === 'amount' ? '剩余：¥' + money(it.balance) : '剩余：' + Math.max(0, (Number(it.totalUses) || 0) - (Number(it.usedUses) || 0)) + ' 次';
+        } else if (kind === 'voucher') {
+          remain = it.mode === 'amount' ? '剩余：¥' + money(it.balance) : '剩余：' + Math.max(0, (Number(it.totalUses) || 0) - (Number(it.usedUses) || 0)) + ' 次';
+        }
+        const desc = [
+          label ? '分类：' + label : '',
+          sub ? '商家/平台：' + sub : '',
+          '到期日：' + it.expiry,
+          remain,
+        ].filter(Boolean).join('\n');
+        push({
+          uid: 'guanka-asset-' + kind + '-' + it.id + '-' + it.expiry,
+          date: it.expiry,
+          title: label + '到期：' + nm,
+          desc,
+        });
+      }
+    };
+    scanAssets(assetData.memberships, 'membership', '会员卡/储值卡');
+    scanAssets(assetData.vouchers, 'voucher', '卡/票');
+    scanAssets((assetData.knowledge || []).filter((k) => k && !k.lifetime), 'knowledge', '知识库订阅');
+  }
+
   // 按日期排序，稳定输出
   events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : String(a.uid).localeCompare(String(b.uid))));
   return events;
@@ -210,7 +249,7 @@ function buildICS(events, now) {
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     'X-WR-CALNAME:' + esc(CALNAME),
-    'X-WR-CALDESC:' + esc('信用卡还款/年费/账单/刷卡任务提醒'),
+    'X-WR-CALDESC:' + esc('信用卡还款/年费/账单/刷卡任务 + 会员卡/卡票/知识库到期提醒'),
     'REFRESH-INTERVAL;VALUE=DURATION:PT12H',
     'X-PUBLISHED-TTL:PT12H',
   ];
@@ -262,8 +301,8 @@ function alarmTrigger(dateStr) {
 }
 
 /** 对外入口：生成完整 ICS 文本 */
-function generateICS(computed, bills, now) {
-  return buildICS(collectEvents(computed, bills, now), now);
+function generateICS(computed, bills, now, assetData) {
+  return buildICS(collectEvents(computed, bills, now, assetData), now);
 }
 
 module.exports = { generateICS, collectEvents, _internals: { esc, foldLine, icsDate, buildICS } };

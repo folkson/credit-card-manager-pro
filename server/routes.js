@@ -597,7 +597,7 @@ async function handle(method, pathname, url, body, req) {
   const now = new Date();
 
   // ---- 基础 ----
-  if (pathname === '/api/health') return json({ ok: true, version: '1.0.1', time: now.toISOString() });
+  if (pathname === '/api/health') return json({ ok: true, version: '1.1.1', time: now.toISOString() });
   if (pathname === '/api/meta') return json({ channels: CHANNELS, categories: CATEGORIES, waiverTypes: WAIVER_TYPES, resetCycles: RESET_CYCLES, benefitTypes: BENEFIT_TYPES, csvHeader: CSV_HEADER, mycardsCsvHeader: MYCARD_CSV_HEADER, maxImportCards: MAX_IMPORT_CARDS, assets: getAssetMeta() });
   if (pathname === '/api/shutdown') {
     // 需要鉴权（由 index.js 的 auth.guard 保证）；此处再加一层同源校验，
@@ -2048,7 +2048,9 @@ async function handle(method, pathname, url, body, req) {
   if (pathname === '/api/calendar.ics' && method === 'GET') {
     const idx = buildIndexes();
     const computed = getMyCards().map((m) => computeMyCard(m, now, idx));
-    const text = ics.generateICS(computed, getBills(), now);
+    // 第 ⑤ 类事件源：扩展资产到期（会员卡/卡票/知识库订阅）
+    const assetData = { memberships: getMemberships(), vouchers: getVouchers(), knowledge: getKnowledge() };
+    const text = ics.generateICS(computed, getBills(), now, assetData);
     return {
       ics: text,
       headers: {
