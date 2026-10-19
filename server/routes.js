@@ -597,7 +597,7 @@ async function handle(method, pathname, url, body, req) {
   const now = new Date();
 
   // ---- 基础 ----
-  if (pathname === '/api/health') return json({ ok: true, version: '1.0.0', time: now.toISOString() });
+  if (pathname === '/api/health') return json({ ok: true, version: '1.0.1', time: now.toISOString() });
   if (pathname === '/api/meta') return json({ channels: CHANNELS, categories: CATEGORIES, waiverTypes: WAIVER_TYPES, resetCycles: RESET_CYCLES, benefitTypes: BENEFIT_TYPES, csvHeader: CSV_HEADER, mycardsCsvHeader: MYCARD_CSV_HEADER, maxImportCards: MAX_IMPORT_CARDS, assets: getAssetMeta() });
   if (pathname === '/api/shutdown') {
     // 需要鉴权（由 index.js 的 auth.guard 保证）；此处再加一层同源校验，

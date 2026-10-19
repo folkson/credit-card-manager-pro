@@ -1,6 +1,6 @@
 {
   "name": "credit-card-manager-docker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "管卡 — 信用卡管理工具（Docker 版）：卡种数据库 + 我的持卡 + 消费/权益记录 + 年费到期提醒",
   "main": "server/index.js",
   "scripts": {
