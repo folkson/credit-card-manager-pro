@@ -1,18 +1,43 @@
 # 管卡 Docker 版 — 代码复盘报告
 
 > 范围：`credit-card-manager/` 全量代码（server 6 文件 + public 3 文件 + tools 6 脚本）
-> 本文件包含八轮复盘：第一轮（首轮交付后）、第二轮（P0/P1/P2 对齐金山文档落地后）、第三轮（全量通读后）、第四轮（对第三轮修复的复查）、第五轮（边界与一致性探测）、第六轮（新增合并账单组功能）、第七轮（数据安全与时间基准通读）、第八轮（资产长尾交互全量走查 + 提交防重）
+> 本文件包含八轮复盘：第一轮（首轮交付后）、第二轮（P0/P1/P2 对齐金山文档落地后）、第三轮（全量通读后）、第四轮（对第三轮修复的复查）、第五轮（边界与一致性探测）、第六轮（新增合并账单组功能）、第七轮（数据安全与时间基准通读）、第八轮（资产长尾交互全量走查 + 提交防重 + 卡/票页点击失效修复）
 
 ---
 
-# 第八轮复盘（2026-10-19，资产长尾交互全量走查 + 提交防重）
+# 第八轮复盘（2026-10-19，资产长尾交互全量走查 + 提交防重 + 卡/票页点击失效修复）
 
-> 触发：用户要求「review 这个项目，修复 bug 和性能问题」
+> 触发：用户要求「review 这个项目，修复 bug 和性能问题」；随后用户反馈「卡/票页面无法点击」
 > 侧重：**routes.js 长尾端点**（bills/consumptions/benefits/billgroups/assets 三模块/feed/expiring/notify/syncMyCardSnapshots）、**前端资产三页 CRUD 交互**（弹窗/抽屉/导入导出/云同步全链路）
-> 结论：服务端长尾端点**零缺陷**（幂等 generate、parseDateStr 真实校验、resolveBenefit bid 优先、掩码回写、互斥检查等既有防御全部确认有效）；唯一确认缺陷是**前端全部提交型弹窗缺少防重复提交**——R8-1
-> 验证：dates-test **39/39** ｜ notify-test **128/128** ｜ backup-test **54/54** ｜ assets-smoke **48/48** ｜ ICS 断言 **9/9** ｜ ui-test **71/71** ｜ cloud-sync-smoke **28/28**
+> 结论：服务端长尾端点**零缺陷**（幂等 generate、parseDateStr 真实校验、resolveBenefit bid 优先、掩码回写、互斥检查等既有防御全部确认有效）；确认缺陷两处——R8-1 提交无防重、R8-2 资产页整页按钮失效
+> 验证：dates-test **39/39** ｜ notify-test **128/128** ｜ backup-test **54/54** ｜ assets-smoke **48/48** ｜ ICS 断言 **9/9** ｜ ui-test **75/75**（新增 4 项）｜ cloud-sync-smoke **28/28**
 
 ## 一、确认并修复的缺陷
+
+### R8-2 资产页整页按钮失效——bindPageEvents 裸 .card-row 选择器误抓券行（可用性，高）— ✅ 已修复
+
+用户报告「卡/票页面无法点击」。根因不在 1.1.2 的 submitLock 改动（diff 全部是事件包装，
+未触碰渲染与绑定），而是资产模块上线时（8e5fc95）就埋下的**选择器串扰**：
+
+`bindPageEvents()` 的「持卡行」绑定用裸选择器 `$$('.card-row', app)` 并对每行直接执行
+`$('[data-act="detail"]', row).addEventListener(...)`。而资产三页（卡/票·会员储值·知识库）的行
+**同样使用 card-row class**（`data-vou-id` / `data-mem-id` / `data-kg-id`），行内没有
+`data-act="detail"` 按钮 → `$()` 返回 null → `addEventListener` 抛 TypeError →
+
+- `bindPageEvents` 在持卡行循环处**中断**
+- 末尾的 `bindAssetPageEvents()`（584 行）**执行不到**
+- 卡/票页所有按钮（添加/商家管理/筛选/核销/详情）**全部没有绑定** → 整页不可点击
+
+**触发条件**：仅当卡/票列表**非空**时（空列表页面无 `.card-row` 行，不会触发——这也解释了
+为何 ui-test 71 项此前全绿：测试环境资产页恰好无数据）。会员/知识库页同理受影响。
+
+**修复**（public/app.js bindPageEvents）：
+1. 选择器收紧为 `$$('.card-row[data-id]', app)`——持卡行带 `data-id`，资产行没有，天然隔离
+2. 行绑定加判空守卫：`const detailBtn = ...; if (!detailBtn) return;`——结构变动时单行缺按钮不再拖垮整页
+
+**jsdom 实锤复现**：造一条券 → 切卡/票页 → `Cannot read properties of null (reading 'addEventListener')`
+at bindPageEvents 569 行；点「添加」「核销」弹窗均不弹。修复后同场景 12/12 断言通过，
+并新增 ui-test 第 17 段 4 项防回归断言（造券 → 切页 → 无报错 → 弹窗可开）。
 
 ### R8-1 全部提交型弹窗/按钮无防重复提交 → 慢网络下双击双笔记账（数据正确性，高）— ✅ 已修复
 
@@ -72,7 +97,7 @@
 | `tools/backup-test.js` | 54/54 通过 |
 | `test/assets-smoke.js` | 48/48 通过 |
 | ICS 内联断言（资产三类 UID + DTSTART + 旧调用兼容） | 9/9 通过 |
-| `tools/ui-test.js` | 71/71 通过（含消费保存/权益补录/建组全链路） |
+| `tools/ui-test.js` | 75/75 通过（新增第 17 段 4 项：R8-2 防回归——造券切页/无报错/添加与核销弹窗可开） |
 | `test/cloud-sync-smoke.js` | 28/28 通过（含 app.js 全文件可解析） |
 
 # 第七轮复盘（2026-10-13，数据安全与时间基准通读）

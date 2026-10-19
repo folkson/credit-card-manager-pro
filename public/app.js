@@ -564,9 +564,14 @@ function bindPageEvents() {
     });
   });
 
-  // 持卡行
-  $$('.card-row', app).forEach((row) => {
-    $('[data-act="detail"]', row).addEventListener('click', () => openDrawer(row.dataset.id));
+  // 持卡行：必须限定 [data-id] —— 资产页（卡/票·会员·知识库）的行也用 .card-row
+  // class（data-vou-id/data-mem-id/data-kg-id），裸选择器会抓到它们，
+  // 而 $("[data-act=detail]") 拿到 null → addEventListener 抛错 →
+  // bindPageEvents 中断，bindAssetPageEvents 执行不到 → 整页按钮全部失效
+  $$('.card-row[data-id]', app).forEach((row) => {
+    const detailBtn = $('[data-act="detail"]', row);
+    if (!detailBtn) return; // 防御：结构变动时不让单行缺按钮拖垮整页绑定
+    detailBtn.addEventListener('click', () => openDrawer(row.dataset.id));
     const pts = $('[data-act="toggle-points"]', row);
     if (pts) pts.addEventListener('click', (e) => { e.stopPropagation(); togglePoints(row.dataset.id); });
     const asset = $('[data-act="toggle-asset"]', row);

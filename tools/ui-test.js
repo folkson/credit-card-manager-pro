@@ -502,7 +502,45 @@ async function main() {
     }
   }
 
-  // ---- 17. 页面错误 ----
+  // ---- 17. 资产页交互（R8-2 回归：bindPageEvents 裸 .card-row 选择器曾抓到券行 →
+  // null.addEventListener 抛错 → bindAssetPageEvents 执行不到 → 卡/票页整页按钮失效。
+  // 该 bug 只在「券列表非空」时触发，故先通过 API 造数据再切页验证）----
+  const created = await fetch(BASE + '/api/vouchers', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ brand: 'UI测试商家', name: 'UI测试券', type: 'coupon', totalUses: 3 }),
+  }).then((r) => r.json()).catch(() => null);
+  if (created && created.id) {
+    const vouNav = $('.nav-item[data-page="vouchers"]');
+    vouNav.click();
+    await sleep(300);
+    const app = $('#app');
+    check('卡/票页渲染券行', $$('.card-row[data-vou-id]', app).length >= 1);
+    check('卡/票页无未捕获错误（选择器修复生效）', pageErrors.length === 0, pageErrors.join('; '));
+    const vouAdd = $('#btn-vou-add', app);
+    if (vouAdd) {
+      vouAdd.click();
+      await sleep(200);
+      check('「添加卡/票」弹窗可打开', !!$('#modal') && !!$('#v-name'));
+      $$('[data-close]').forEach((b) => b.click());
+      await sleep(150);
+    }
+    const vouUse = $('[data-act="vou-use"]', app);
+    if (vouUse) {
+      vouUse.click();
+      await sleep(200);
+      check('「核销」弹窗可打开', !!$('#modal') && !!$('#vu-date'));
+      $$('[data-close]').forEach((b) => b.click());
+      await sleep(150);
+    }
+    // 清理测试券
+    await fetch(BASE + '/api/vouchers/' + created.id, { method: 'DELETE' });
+    $('.nav-item[data-page="mycards"]').click();
+    await sleep(200);
+  } else {
+    check('卡/票页交互前置：造券数据成功', false, 'API 创建失败');
+  }
+
+  // ---- 18. 页面错误 ----
   check('运行期间无未捕获页面错误', pageErrors.length === 0, pageErrors.join('; '));
 
   // ---- 汇总 ----
