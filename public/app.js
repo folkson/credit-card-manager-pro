@@ -213,10 +213,11 @@ async function loadAll() {
   state.settings = settings;
   state.meta = meta;
   state.myCards = mycardsResp.data || mycardsResp;
-  state.stats = mycardsResp.stats || null;
+  state.stats = mycardsResp.stats || emptyStats();
   state.billGroups = mycardsResp.billGroups || [];
   state.cards = cards;
   state.bills = bills || [];
+  state._billsByCard = null; // 账单索引缓存随数据整体刷新失效
   state.memberships = assets.memberships;
   state.vouchers = assets.vouchers;
   state.voucherBrands = assets.voucherBrands;
@@ -279,8 +280,14 @@ function orderedBanks(banks) {
 }
 
 // ---------- 页面一：我的持卡 ----------
+// 空统计兜底：旧版 API 兼容路径（mycardsResp 为纯数组）拿不到 stats，
+// 渲染层直接取 s.feeExpiring 等字段会 TypeError 白屏
+function emptyStats() {
+  return { totalCards: 0, totalBanks: 0, maxCreditSum: 0, monthSpend: 0, yearSpend: 0, feeExpiring: [] };
+}
+
 function renderMyCards() {
-  const s = state.stats;
+  const s = state.stats || emptyStats();
   const feeNames = s.feeExpiring.map((f) => esc(f.name)).join('、');
   let html =
     '<div class="stats">' +
@@ -1094,7 +1101,7 @@ function renderMyCardsImportResult(r) {
 }
 
 function showFeeExpiring() {
-  const list = state.stats.feeExpiring;
+  const list = (state.stats || emptyStats()).feeExpiring;
   if (!list.length) return toast('30 天内没有需要缴费的卡');
   openModal(
     '<div class="modal-title">年费即将到期（30 天内需缴费）</div>',
@@ -1529,7 +1536,19 @@ function groupBillsSectionHtml(m) {
 }
 
 function myBills(m) {
-  return (state.bills || []).filter((b) => b.myCardId === m.id).sort((a, b) => (a.month < b.month ? 1 : -1));
+  // 按 myCardId 建一次索引：unpaid 筛选会对每张卡调 unpaidCount→myBills，
+  // 每次全量 filter 是 O(卡数 × 账单数)；state.bills 只在 loadAll 整体重赋值，缓存安全
+  let idx = state._billsByCard;
+  if (!idx) {
+    idx = state._billsByCard = new Map();
+    for (const b of state.bills || []) {
+      const arr = idx.get(b.myCardId);
+      if (arr) arr.push(b);
+      else idx.set(b.myCardId, [b]);
+    }
+    for (const arr of idx.values()) arr.sort((a, b) => (a.month < b.month ? 1 : -1));
+  }
+  return idx.get(m.id) || [];
 }
 
 function groupMembersOf(m) {
@@ -1541,10 +1560,10 @@ function groupMembersOf(m) {
 function groupBillRows(m) {
   const members = groupMembersOf(m);
   if (!members.length) return [];
-  const ids = members.map((x) => x.id);
+  const idSet = new Set(members.map((x) => x.id));
   const byMonth = {};
   for (const b of state.bills || []) {
-    if (!ids.includes(b.myCardId)) continue;
+    if (!idSet.has(b.myCardId)) continue;
     const e = byMonth[b.month] || (byMonth[b.month] = { month: b.month, total: 0, unpaid: 0, count: 0, dueDate: '', paidDate: '' });
     e.total += Number(b.amount) || 0;
     e.count++;
