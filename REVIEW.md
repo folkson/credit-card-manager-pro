@@ -1,9 +1,79 @@
 # 管卡 Docker 版 — 代码复盘报告
 
 > 范围：`credit-card-manager/` 全量代码（server 6 文件 + public 3 文件 + tools 6 脚本）
-> 本文件包含七轮复盘：第一轮（首轮交付后）、第二轮（P0/P1/P2 对齐金山文档落地后）、第三轮（全量通读后）、第四轮（对第三轮修复的复查）、第五轮（边界与一致性探测）、第六轮（新增合并账单组功能）、第七轮（数据安全与时间基准通读）
+> 本文件包含八轮复盘：第一轮（首轮交付后）、第二轮（P0/P1/P2 对齐金山文档落地后）、第三轮（全量通读后）、第四轮（对第三轮修复的复查）、第五轮（边界与一致性探测）、第六轮（新增合并账单组功能）、第七轮（数据安全与时间基准通读）、第八轮（资产长尾交互全量走查 + 提交防重）
 
 ---
+
+# 第八轮复盘（2026-10-19，资产长尾交互全量走查 + 提交防重）
+
+> 触发：用户要求「review 这个项目，修复 bug 和性能问题」
+> 侧重：**routes.js 长尾端点**（bills/consumptions/benefits/billgroups/assets 三模块/feed/expiring/notify/syncMyCardSnapshots）、**前端资产三页 CRUD 交互**（弹窗/抽屉/导入导出/云同步全链路）
+> 结论：服务端长尾端点**零缺陷**（幂等 generate、parseDateStr 真实校验、resolveBenefit bid 优先、掩码回写、互斥检查等既有防御全部确认有效）；唯一确认缺陷是**前端全部提交型弹窗缺少防重复提交**——R8-1
+> 验证：dates-test **39/39** ｜ notify-test **128/128** ｜ backup-test **54/54** ｜ assets-smoke **48/48** ｜ ICS 断言 **9/9** ｜ ui-test **71/71** ｜ cloud-sync-smoke **28/28**
+
+## 一、确认并修复的缺陷
+
+### R8-1 全部提交型弹窗/按钮无防重复提交 → 慢网络下双击双笔记账（数据正确性，高）— ✅ 已修复
+
+所有提交型按钮的事件处理器直接发起异步 `api()` 请求，请求进行中按钮不禁用。
+本地服务响应快（<10ms）掩盖了问题；CF Workers 部署后延迟 200–500ms，用户双击「保存/核销/充值」
+会发出**两个请求**。涉事端点全部非幂等：
+
+- `POST /api/mycards/:id/consumptions`（消费）→ 双笔消费、刷免进度翻倍
+- `POST /api/mycards`（新增持卡）→ **服务端无去重**（routes.js:1201 直接 push），双击建两张卡
+- `POST /api/memberships/:id/txn`、`/api/vouchers/:id/topup|use`、`/api/knowledge/:id/use|history` → 双扣余额/双计次数
+- `POST /api/billgroups`、`/api/cards`（后者有键去重会报错，但报错体验也差）
+
+**修复**：`public/app.js` 新增 `submitLock(btn, fn)` 助手——提交期间 `btn.disabled = true`，
+`finally` 中恢复（失败也要解锁）。CSS 已有 `.btn:disabled` 样式（opacity .5 + not-allowed），
+无需改样式。共加固 **23 处**提交点：
+
+| 位置 | 按钮 |
+|---|---|
+| 账单组 | bg-create / bg-save |
+| 账单 | b-save（新增账单） |
+| 抽屉 | count-topup（补录笔数）/ count-benefit（权益补录） |
+| 持卡 | btn-save-mycard ×2（添加 / 编辑，走 saveMyCard） |
+| 消费/权益 | btn-save-consumption / btn-save-benefit |
+| 卡种 | btn-save-cardtype |
+| 券 | btn-vou-save / btn-vu-save ×2（金额核销 + 次数核销）/ btn-vt-save |
+| 商家 | btn-brand-new |
+| 会员 | btn-mem-save / btn-mt-save ×2（金额型 + 次数型）/ md-undo（回退） |
+| 知识库 | btn-kg-save / kd-use / kd-undo / btn-kh-save（流水） |
+
+另：知识库行内「用一次」按钮（`openKgUseQuick`）不经过弹窗，用模块级 `_kgUseInFlight` Set
+按 id 防并发（成功/失败都在 finally 释放）。
+
+**设计取舍**：不加全局请求队列（复杂度高、易引入死锁）；按钮级锁最贴近事故面，
+`e.currentTarget` 在同一 tick 捕获，避免异步后 currentTarget 变 null 的坑。
+
+## 二、评审通过项（本轮确认无缺陷，记录防御点备查）
+
+| 模块 | 确认的既有防御 |
+|---|---|
+| bills generate | 幂等：同卡同月已存在直接返回，不重复建 |
+| bills POST/PUT | YYYY-MM 严格正则 + parseDateStr 真实日期校验（拒绝 2 月 30 日） |
+| billgroups POST/PUT | 组内两两 sameRepaySchedule 校验，破坏一致性即拒绝 |
+| benefits usage/count | expired/exhausted 拦截、-1 不限次跳上限、bid 优先防索引错位 |
+| assets stats/feed/expiring | 单趟 reduce + buildIndexes 复用；limit/days 参数钳位 |
+| notify runNotifyChecks | 运行互斥；回写只覆盖 lastCheckAt/sentLog/history 三个检查字段 |
+| memberships txn | 金额型余额校验（消费不透支）；次数型 use/undo 边界（用完拒绝/无记录拒绝） |
+| vouchers use/topup | fullred 门槛校验；mode 分流（储值型拒绝走次数端点）；余额不足拒绝 |
+| knowledge use | undo 只撤次数不删流水（与消费撤销语义对齐）；配额联动 quotaKey |
+| 云同步 | merge 幂等导入；完全幂等时 `_skipNextPush` 跳过冗余回传（增量合并则回传并集，设计如此）；`_restored` 阀防空数据覆盖云端 |
+
+## 三、验证
+
+| 测试 | 结果 |
+|---|---|
+| `tools/dates-test.js` | 39/39 通过 |
+| `tools/notify-test.js` | 128/128 通过 |
+| `tools/backup-test.js` | 54/54 通过 |
+| `test/assets-smoke.js` | 48/48 通过 |
+| ICS 内联断言（资产三类 UID + DTSTART + 旧调用兼容） | 9/9 通过 |
+| `tools/ui-test.js` | 71/71 通过（含消费保存/权益补录/建组全链路） |
+| `test/cloud-sync-smoke.js` | 28/28 通过（含 app.js 全文件可解析） |
 
 # 第七轮复盘（2026-10-13，数据安全与时间基准通读）
 

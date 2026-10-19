@@ -114,6 +114,14 @@ function toast(msg, type) {
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 300); }, 2600);
 }
 
+// 提交锁：异步提交期间禁用按钮，防慢网络下双击重复提交
+// （消费/权益使用/会员与券的充值核销/新增持卡等端点非幂等，双击会双笔记账或双扣余额）
+async function submitLock(btn, fn) {
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try { await fn(); } finally { btn.disabled = false; }
+}
+
 function confirmDialog(msg) {
   return new Promise((resolve) => {
     const wrap = document.createElement('div');
@@ -1304,7 +1312,7 @@ async function openBillGroupsModal(focusGid) {
     });
     $('[data-act="bg-edit"]', el).addEventListener('click', () => openBillGroupEditModal(gid));
   });
-  $('#bg-create').addEventListener('click', async () => {
+  $('#bg-create').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const name = $('#bg-name').value.trim();
     if (!name) return toast('请填写组名称', 'error');
     const memberIds = $$('#bg-members input:checked').map((x) => x.value);
@@ -1316,7 +1324,7 @@ async function openBillGroupsModal(focusGid) {
       await loadAll();
       openBillGroupsModal();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
   if (focusGid) {
     const el = modal.querySelector('.bg-group[data-gid="' + focusGid + '"]');
     // scrollIntoView 在部分环境（无头浏览器 / 旧内核 / 测试环境）不存在，直接调用会抛 TypeError
@@ -1360,7 +1368,7 @@ async function openBillGroupEditModal(gid) {
     '<div style="margin-top:10px"><label style="font-size:12px;color:var(--text-2)">成员（取消勾选可移出该组）</label>' +
     '<div id="bg-members">' + memberChecklistHtml(my, gid) + '</div></div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="bg-save">保存</button>');
-  $('#bg-save').addEventListener('click', async () => {
+  $('#bg-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const name = $('#bg-name').value.trim();
     if (!name) return toast('请填写组名称', 'error');
     const memberIds = $$('#bg-members input:checked').map((x) => x.value);
@@ -1372,7 +1380,7 @@ async function openBillGroupEditModal(gid) {
       await loadAll();
       openBillGroupsModal(memberIds.length ? gid : undefined);
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // ---------- 抽屉：持卡详情 ----------
@@ -1612,7 +1620,7 @@ async function openBillModal(m) {
     field('是否已还', '<select id="b-paid"><option>未还</option><option>已还</option></select>') +
     '</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="b-save">保存</button>');
-  $('#b-save').addEventListener('click', async () => {
+  $('#b-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     try {
       await api('/api/bills', {
         method: 'POST',
@@ -1628,7 +1636,7 @@ async function openBillModal(m) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 function sliderHtml(act, on, label, date, id) {
@@ -1687,7 +1695,7 @@ function bindDrawerEvents(m) {
 
   // 消费记录
   $('[data-act="record-consumption"]', drawer).addEventListener('click', () => openConsumptionModal(m));
-  $('[data-act="count-topup"]', drawer).addEventListener('click', async () => {
+  $('[data-act="count-topup"]', drawer).addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const input = $('#count-topup-input', drawer);
     const n = parseInt(input.value, 10);
     if (!n || n <= 0) return toast('请输入大于 0 的笔数', 'error');
@@ -1696,7 +1704,7 @@ function bindDrawerEvents(m) {
       toast('已补录 ' + n + ' 笔');
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
   $$('[data-act="detail-records"]', drawer).forEach((btn) => {
     btn.addEventListener('click', () => openRecordsModal(m, btn.dataset.scope));
   });
@@ -1754,7 +1762,7 @@ function bindDrawerEvents(m) {
     const b = (m.benefits || [])[idx];
     if (!b) return;
     $('[data-act="record-benefit"]', block).addEventListener('click', () => openBenefitModal(m, idx));
-    $('[data-act="count-benefit"]', block).addEventListener('click', async () => {
+    $('[data-act="count-benefit"]', block).addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
       const input = $('input', block);
       const n = parseInt(input.value, 10);
       if (!n || n <= 0) return toast('请输入大于 0 的次数', 'error');
@@ -1763,7 +1771,7 @@ function bindDrawerEvents(m) {
         toast('已补录 ' + n + ' 次');
         await loadAll();
       } catch (e) { toast(e.message, 'error'); }
-    });
+    }));
     $('[data-act="benefit-history"]', block).addEventListener('click', () => openBenefitHistoryModal(m, idx));
   });
 }
@@ -1814,7 +1822,7 @@ function openAddCardModal() {
   renderPickList(selected, '');
   $('#pick-search').addEventListener('input', (e) => renderPickList(selected, e.target.value.trim()));
   $('#btn-custom-card').addEventListener('click', () => openCustomCardForm(selected));
-  $('#btn-save-mycard').addEventListener('click', () => saveMyCard(selected, null));
+  $('#btn-save-mycard').addEventListener('click', (e) => submitLock(e.currentTarget, () => saveMyCard(selected, null)));
 }
 
 /** 自定义卡片：切到「卡种信息 + 持卡信息」双段表单，隐藏卡种库选择区 */
@@ -2121,7 +2129,7 @@ function openMyCardModal(m) {
     '<div id="pick-form">' + myCardFormHtml(c, m) + '</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-save-mycard">保存</button>');
   bindMyCardForm($('#pick-form'), c, m);
-  $('#btn-save-mycard').addEventListener('click', () => saveMyCard(null, m));
+  $('#btn-save-mycard').addEventListener('click', (e) => submitLock(e.currentTarget, () => saveMyCard(null, m)));
 }
 
 // ---------- 弹窗：记一笔消费 ----------
@@ -2137,7 +2145,7 @@ function openConsumptionModal(m) {
     field('备注（可选）', '<input id="c-note" placeholder="备注">') +
     '</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-save-consumption">保存</button>');
-  $('#btn-save-consumption').addEventListener('click', async () => {
+  $('#btn-save-consumption').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const amount = parseFloat($('#c-amount').value);
     if (!amount || amount <= 0) return toast('请输入大于 0 的金额', 'error');
     try {
@@ -2149,7 +2157,7 @@ function openConsumptionModal(m) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // ---------- 弹窗：消费明细 ----------
@@ -2241,7 +2249,7 @@ function openBenefitModal(m, idx) {
     '</div>' +
     '<div style="font-size:12px;color:var(--text-3);margin-top:8px">当前周期已用 ' + b.used + ' 次（' + esc(b.resetCycle) + '重置' + (b.unlimited ? '，不限次数' : '，上限 ' + b.total + ' 次') + '）</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-save-benefit">保存</button>');
-  $('#btn-save-benefit').addEventListener('click', async () => {
+  $('#btn-save-benefit').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     try {
       await api('/api/mycards/' + m.id + '/benefits/' + idx + '/usage', {
         method: 'POST', body: { date: $('#b-date').value, note: $('#b-note').value.trim(), bid: b.id || '' },
@@ -2250,7 +2258,7 @@ function openBenefitModal(m, idx) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 async function openBenefitHistoryModal(m, idx) {
@@ -2293,7 +2301,7 @@ function openCardTypeModal(id) {
     field('备注', '<input id="t-note" value="' + esc(c ? c.note : '') + '" placeholder="备注">') +
     '</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-save-cardtype">保存</button>');
-  $('#btn-save-cardtype').addEventListener('click', async () => {
+  $('#btn-save-cardtype').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const body = {
       bank: $('#t-bank').value.trim(),
       name: $('#t-name').value.trim(),
@@ -2315,7 +2323,7 @@ function openCardTypeModal(id) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 async function deleteCardType(id) {
@@ -2528,7 +2536,7 @@ function openVoucherModal(id) {
   };
   $('#v-type').addEventListener('change', syncTypeFields);
   syncTypeFields();
-  $('#btn-vou-save').addEventListener('click', async () => {
+  $('#btn-vou-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const brandSel = $('#v-brand-sel').value;
     const body = {
       brand: ($('#v-brand').value.trim() || brandSel || '').trim(),
@@ -2552,7 +2560,7 @@ function openVoucherModal(id) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // 核销弹窗：按类型分流（次数核销 / 金额核销 / 满减校验）
@@ -2568,7 +2576,7 @@ function openVoucherUseModal(id) {
       '</div>' +
       '<div style="font-size:12px;color:var(--text-3);margin-top:8px">当前余额 ' + fmtMoney(v.balance) + '</div>',
       '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-vu-save">核销</button>');
-    $('#btn-vu-save').addEventListener('click', async () => {
+    $('#btn-vu-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
       const amount = parseFloat($('#vu-amount').value);
       if (!amount || amount <= 0) return toast('请输入大于 0 的金额', 'error');
       try {
@@ -2577,7 +2585,7 @@ function openVoucherUseModal(id) {
         closeModal();
         await loadAll();
       } catch (e) { toast(e.message, 'error'); }
-    });
+    }));
     return;
   }
   const fullredRow = v.type === 'fullred'
@@ -2590,7 +2598,7 @@ function openVoucherUseModal(id) {
     '</div>' +
     '<div style="font-size:12px;color:var(--text-3);margin-top:8px">已用 ' + (v.usedUses || 0) + ' / ' + v.totalUses + ' 次</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-vu-save">核销</button>');
-  $('#btn-vu-save').addEventListener('click', async () => {
+  $('#btn-vu-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const body = { date: $('#vu-date').value, note: $('#vu-note').value.trim() };
     if (v.type === 'fullred') {
       const spend = parseFloat($('#vu-spend').value);
@@ -2603,7 +2611,7 @@ function openVoucherUseModal(id) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // 储值卡充值弹窗
@@ -2618,7 +2626,7 @@ function openVoucherTopupModal(id) {
     '</div>' +
     '<div style="font-size:12px;color:var(--text-3);margin-top:8px">当前余额 ' + fmtMoney(v.balance) + '</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-vt-save">充值</button>');
-  $('#btn-vt-save').addEventListener('click', async () => {
+  $('#btn-vt-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const amount = parseFloat($('#vt-amount').value);
     if (!amount || amount <= 0) return toast('请输入大于 0 的金额', 'error');
     try {
@@ -2627,7 +2635,7 @@ function openVoucherTopupModal(id) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // 卡/票详情抽屉（流水 + 编辑 + 删除）
@@ -2703,7 +2711,7 @@ function openBrandsModal() {
     '<button class="btn primary" id="btn-brand-new">添加</button></div>' +
     '<div id="brand-list">' + renderList(state.voucherBrands || []) + '</div>',
     '<button class="btn primary" data-close>关闭</button>');
-  $('#btn-brand-new').addEventListener('click', async () => {
+  $('#btn-brand-new').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const name = $('#brand-new-name').value.trim();
     if (!name) return toast('请填写商家名称', 'error');
     try {
@@ -2714,7 +2722,7 @@ function openBrandsModal() {
       $('#brand-new-name').value = '';
       toast('商家已添加');
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
   const bindBrandActions = () => {
     $$('#brand-list [data-act="brand-edit"]').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -2843,7 +2851,7 @@ function openMemModal(id) {
     $('#m-amount-fields').style.display = isCount ? 'none' : '';
     $('#m-count-fields').style.display = isCount ? '' : 'none';
   });
-  $('#btn-mem-save').addEventListener('click', async () => {
+  $('#btn-mem-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const body = {
       name: $('#m-name').value.trim(),
       category: $('#m-category').value,
@@ -2861,7 +2869,7 @@ function openMemModal(id) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // 会员卡使用/消费/充值弹窗
@@ -2878,7 +2886,7 @@ function openMemTxnModal(id, kind) {
       '</div>' +
       '<div style="font-size:12px;color:var(--text-3);margin-top:8px">当前余额 ' + fmtMoney(m.balance) + '</div>',
       '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-mt-save">' + (isTopup ? '充值' : '消费') + '</button>');
-    $('#btn-mt-save').addEventListener('click', async () => {
+    $('#btn-mt-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
       const amount = parseFloat($('#mt-amount').value);
       if (!amount || amount <= 0) return toast('请输入大于 0 的金额', 'error');
       try {
@@ -2887,7 +2895,7 @@ function openMemTxnModal(id, kind) {
         closeModal();
         await loadAll();
       } catch (e) { toast(e.message, 'error'); }
-    });
+    }));
     return;
   }
   // 次数型
@@ -2898,14 +2906,14 @@ function openMemTxnModal(id, kind) {
     '</div>' +
     '<div style="font-size:12px;color:var(--text-3);margin-top:8px">已用 ' + (m.usedUses || 0) + ' / ' + m.totalUses + ' 次</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-mt-save">使用</button>');
-  $('#btn-mt-save').addEventListener('click', async () => {
+  $('#btn-mt-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     try {
       const r = await api('/api/memberships/' + m.id + '/txn', { method: 'POST', body: { kind: 'use', date: $('#mt-date').value, note: $('#mt-note').value.trim() } });
       toast('已使用，剩 ' + Math.max(0, (m.totalUses || 0) - r.usedUses) + ' 次');
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // 会员卡详情抽屉
@@ -2949,14 +2957,14 @@ function openMemDetail(id) {
   const topupBtn = $('[data-act="md-topup"]', root);
   if (topupBtn) topupBtn.addEventListener('click', () => { close(); openMemTxnModal(m.id, 'topup'); });
   const undoBtn = $('[data-act="md-undo"]', root);
-  if (undoBtn) undoBtn.addEventListener('click', async () => {
+  if (undoBtn) undoBtn.addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     try {
       const r = await api('/api/memberships/' + m.id + '/txn', { method: 'POST', body: { kind: 'undo' } });
       toast('已回退，剩 ' + ((m.totalUses || 0) - r.usedUses) + ' 次');
       close();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
   $('[data-act="md-edit"]', root).addEventListener('click', () => { close(); openMemModal(m.id); });
   $('[data-act="md-del"]', root).addEventListener('click', async () => {
     if (!(await confirmDialog('确定删除「' + m.name + '」？流水将一并删除。'))) return;
@@ -3056,7 +3064,7 @@ function openKgModal(id) {
   if (id && !editing) return toast('资源不存在或已被删除', 'error');
   openModal('<div class="modal-title">' + (editing ? '编辑资源' : '添加资源') + '</div>', kgFormHtml(editing),
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-kg-save">保存</button>');
-  $('#btn-kg-save').addEventListener('click', async () => {
+  $('#btn-kg-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const body = {
       title: $('#k-title').value.trim(),
       platform: $('#k-platform').value.trim(),
@@ -3079,7 +3087,7 @@ function openKgModal(id) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // 知识库详情抽屉（使用记录 + 续费流水 + 操作）
@@ -3131,22 +3139,22 @@ function openKgDetail(id) {
   const close = () => { root.innerHTML = ''; };
   $('.overlay', root).addEventListener('click', close);
   $('[data-act="close"]', root).addEventListener('click', close);
-  $('[data-act="kd-use"]', root).addEventListener('click', async () => {
+  $('[data-act="kd-use"]', root).addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     try {
       const r = await api('/api/knowledge/' + k.id + '/use', { method: 'POST', body: { date: today(), note: '' } });
       toast('已记录使用（累计 ' + r.uses + ' 次）');
       close();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
-  $('[data-act="kd-undo"]', root).addEventListener('click', async () => {
+  }));
+  $('[data-act="kd-undo"]', root).addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     try {
       const r = await api('/api/knowledge/' + k.id + '/use', { method: 'POST', body: { undo: true } });
       toast('已回退（累计 ' + r.uses + ' 次）');
       close();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
   $('[data-act="kd-renew"]', root).addEventListener('click', () => { close(); openKgHistoryModal(k.id); });
   $('[data-act="kd-edit"]', root).addEventListener('click', () => { close(); openKgModal(k.id); });
   $('[data-act="kd-del"]', root).addEventListener('click', async () => {
@@ -3173,7 +3181,7 @@ function openKgHistoryModal(id) {
     field('备注（可选）', '<input id="kh-note" placeholder="如 续费一年">') +
     '</div>',
     '<button class="btn" data-close>取消</button><button class="btn primary" id="btn-kh-save">保存</button>');
-  $('#btn-kh-save').addEventListener('click', async () => {
+  $('#btn-kh-save').addEventListener('click', (e) => submitLock(e.currentTarget, async () => {
     const amount = parseFloat($('#kh-amount').value);
     if (!isFinite(amount) || amount < 0) return toast('金额不合法', 'error');
     try {
@@ -3182,7 +3190,7 @@ function openKgHistoryModal(id) {
       closeModal();
       await loadAll();
     } catch (e) { toast(e.message, 'error'); }
-  });
+  }));
 }
 
 // ---------- 页面六：资产统计 ----------
@@ -3281,15 +3289,18 @@ function bindAssetPageEvents() {
   }
 }
 
-// 知识库快速使用（行内按钮，成功后刷新）
+// 知识库快速使用（行内按钮，成功后刷新）；in-flight 集合防双击重复计数
+const _kgUseInFlight = new Set();
 async function openKgUseQuick(id) {
+  if (_kgUseInFlight.has(id)) return;
+  _kgUseInFlight.add(id);
   const k = (state.knowledge || []).find((x) => x.id === id);
-  if (!k) return;
+  if (!k) { _kgUseInFlight.delete(id); return; }
   try {
     const r = await api('/api/knowledge/' + id + '/use', { method: 'POST', body: { date: today(), note: '' } });
     toast('已记录使用（累计 ' + r.uses + ' 次）');
     await loadAll();
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { toast(e.message, 'error'); } finally { _kgUseInFlight.delete(id); }
 }
 
 // ---------- 启动 ----------
